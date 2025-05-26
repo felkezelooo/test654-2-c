@@ -1,32 +1,65 @@
 {
-    "title": "YouTube & Rumble View Bot (test1111 fingerprinting)",
+    "title": "YouTube View Bot (Referer & Proxy Focused)",
+    "description": "Watches YouTube videos using specified referers and Apify residential proxies. Optimized for US, UK, HU.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "videoUrls": {
             "title": "Video URLs",
             "type": "array",
-            "description": "List of YouTube or Rumble video URLs to process",
-            "editor": "stringList"
+            "description": "REQUIRED: List of YouTube video URLs to view. Must have a corresponding referer URL in the 'Referer URLs' list if custom referers are used.",
+            "editor": "stringList",
+            "prefill": [
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            ]
+        },
+        "refererUrls": {
+            "title": "Referer URLs (Optional)",
+            "type": "array",
+            "description": "OPTIONAL: List of referer URLs. Each URL corresponds to a video in 'Video URLs' by order. If an entry is empty or this list is shorter than 'Video URLs', those videos will be accessed directly (no custom referer).",
+            "editor": "stringList",
+            "prefill": [
+                "https://www.google.com/"
+            ]
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",
             "type": "integer",
-            "description": "Percentage of video to watch (1-100)",
+            "description": "Percentage of the video to watch (e.g., 70-95).",
             "minimum": 1,
             "maximum": 100,
-            "default": 80
+            "default": 85
         },
         "useProxies": {
             "title": "Use Apify Proxies",
             "type": "boolean",
-            "description": "Whether to use Apify proxy service",
+            "description": "Whether to use Apify proxy service. Recommended.",
             "default": true
         },
+        "proxyCountry": {
+            "title": "Proxy Country",
+            "type": "string",
+            "description": "Select proxy country. US, UK, HU are optimized. 'ANY' for random residential.",
+            "editor": "select",
+            "enum": [
+                "US",
+                "GB",
+                "HU",
+                "ANY"
+            ],
+            "enumTitles": [
+                "United States (US)",
+                "United Kingdom (GB)",
+                "Hungary (HU)",
+                "Any Residential Country"
+            ],
+            "default": "US"
+        },
         "proxyGroups": {
-            "title": "Proxy Groups",
+            "title": "Proxy Groups (Advanced)",
             "type": "array",
-            "description": "Proxy groups to use. Select one or more.",
+            "description": "Apify proxy groups to use. 'RESIDENTIAL' is recommended for this actor.",
+            "editor": "select",
             "default": ["RESIDENTIAL"],
             "items": {
                 "type": "string",
@@ -36,61 +69,52 @@
                     "BUYPROXIES911",
                     "STATICUS"
                 ]
-            },
-            "editor": "select"
-        },
-        "proxyCountry": {
-            "title": "Proxy Country",
-            "type": "string",
-            "description": "Country code for proxies (e.g., 'US', 'GB', or 'ANY' for random)",
-            "default": "US"
+            }
         },
         "headless": {
             "title": "Headless Mode",
             "type": "boolean",
-            "description": "Run browser in headless mode",
+            "description": "Run browser in headless mode (invisible). Recommended for Apify platform.",
             "default": true
         },
         "autoSkipAds": {
             "title": "Auto Skip Ads",
             "type": "boolean",
-            "description": "Automatically skip advertisements",
+            "description": "Automatically skip advertisements when possible.",
             "default": true
         },
-        "skipAdsAfter": {
-            "title": "Skip Ads After (seconds range)",
-            "type": "array",
-            "description": "Range of seconds to wait before skipping ads [min, max]. E.g., [5, 10]",
-            "default": [5, 10],
-            "items": {
-                "type": "integer"
-            },
-            "editor": "json"
+        "skipAdsAfterMinSeconds": {
+            "title": "Min Ad Watch Time (seconds)",
+            "type": "integer",
+            "description": "Minimum seconds to watch a skippable video ad before attempting to skip (if autoSkipAds is true).",
+            "default": 5
         },
-        "useAV1": {
-            "title": "Use AV1 Codec",
-            "type": "boolean",
-            "description": "Use AV1 video codec if available",
-            "default": false
+        "skipAdsAfterMaxSeconds": {
+            "title": "Max Ad Watch Time (seconds)",
+            "type": "integer",
+            "description": "Maximum seconds to watch a skippable video ad before attempting to skip (if autoSkipAds is true). A random value between min and max will be chosen.",
+            "default": 12
         },
         "timeout": {
-            "title": "Timeout (seconds)",
+            "title": "Operation Timeout (seconds)",
             "type": "integer",
-            "description": "Timeout for operations in seconds",
+            "description": "General timeout for browser operations in seconds (e.g., page load, bot launch).",
             "default": 120
         },
-        "concurrencyInterval": {
-            "title": "Interval Between Videos (seconds)",
+        "concurrency": {
+            "title": "Concurrency",
             "type": "integer",
-            "description": "Seconds to wait between processing videos",
-            "default": 1
+            "description": "Number of videos to process concurrently.",
+            "default": 1,
+            "minimum": 1
         },
-        "searchKeywordsForEachVideo": {
-            "title": "Search Keywords",
-            "type": "array",
-            "description": "Keywords to use when searching for videos (if search logic is implemented in main.js)",
-            "editor": "stringList"
+        "concurrencyInterval": {
+            "title": "Interval Between Video Starts (seconds)",
+            "type": "integer",
+            "description": "Seconds to wait between starting the processing of each video (if concurrency > 1, this applies to staggering starts within the concurrency limit).",
+            "default": 5,
+            "minimum": 0
         }
     },
-    "required": ["videoUrls"]
+    "required": ["videoUrls", "watchTimePercentage"]
 }
