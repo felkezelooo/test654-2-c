@@ -87,19 +87,22 @@
             "title": "Min Ad Watch Time (seconds)",
             "type": "integer",
             "description": "Minimum seconds to watch a skippable video ad before attempting to skip (if autoSkipAds is true).",
-            "default": 5
+            "default": 5,
+            "minimum": 0
         },
         "skipAdsAfterMaxSeconds": {
             "title": "Max Ad Watch Time (seconds)",
             "type": "integer",
             "description": "Maximum seconds to watch a skippable video ad before attempting to skip (if autoSkipAds is true). A random value between min and max will be chosen.",
-            "default": 12
+            "default": 12,
+            "minimum": 0
         },
         "timeout": {
             "title": "Operation Timeout (seconds)",
             "type": "integer",
-            "description": "General timeout for browser operations in seconds (e.g., page load, bot launch).",
-            "default": 120
+            "description": "General timeout for browser operations in seconds (e.g., page load).",
+            "default": 120,
+            "minimum": 30
         },
         "concurrency": {
             "title": "Concurrency",
