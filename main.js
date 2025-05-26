@@ -1,7 +1,7 @@
 const Apify = require('apify');
 const { Actor, log } = Apify;
-const playwright = require('playwright-core');
-const { chromium } = require('playwright-extra');
+// const playwright = require('playwright-core'); // Not needed directly if using playwright-extra's chromium
+const { chromium } = require('playwright-extra'); // Import from playwright-extra
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { to } = require('await-to-js');
 const { v4: uuidv4 } = require('uuid');
@@ -32,22 +32,22 @@ function random(min, max) {
 async function handleYouTubeConsent(page, logger) {
     logger.info('Checking for YouTube consent dialog...');
     const consentButtonSelectors = [
-        'button[aria-label*="Accept all"]',
+        'button[aria-label*="Accept all"]', 
         'button[aria-label*="Accept the use of cookies"]',
         'button[aria-label*="Agree"]',
-        'div[role="dialog"] button:has-text("Accept all")',
+        'div[role="dialog"] button:has-text("Accept all")', 
         'div[role="dialog"] button:has-text("Agree")',
-        'ytd-button-renderer:has-text("Accept all")',
+        'ytd-button-renderer:has-text("Accept all")', 
         'tp-yt-paper-button:has-text("ACCEPT ALL")',
         '#introAgreeButton',
     ];
 
     for (const selector of consentButtonSelectors) {
         try {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 7000 })) {
+            const button = page.locator(selector).first(); 
+            if (await button.isVisible({ timeout: 7000 })) { 
                 logger.info(`Consent button found: "${selector}". Clicking.`);
-                await button.click({ timeout: 5000, force: true });
+                await button.click({ timeout: 5000, force: true }); 
                 await page.waitForTimeout(1500 + random(500, 1500));
                 logger.info('Consent button clicked.');
                 const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
@@ -74,8 +74,7 @@ class YouTubeViewWorker {
         this.proxyUrl = proxyUrl;
         this.logger = baseLogger.child({ prefix: `Worker-${job.videoId.substring(0, 6)}` });
         this.id = uuidv4();
-        this.browser = null;
-        this.context = null;
+        this.browserContext = null; // Changed from this.browser and this.context
         this.page = null;
         this.killed = false;
         this.adWatchState = {
@@ -88,22 +87,7 @@ class YouTubeViewWorker {
     }
 
     async startWorker() {
-        this.logger.info(`Launching browser... Proxy: ${this.proxyUrl ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
-        const launchOptions = {
-            headless: this.effectiveInput.headless,
-            args: [ /* ... standard args for Apify ... */
-                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
-                '--disable-gpu', '--disable-blink-features=AutomationControlled',
-            ],
-        };
-        if (this.proxyUrl) {
-            launchOptions.proxy = { server: this.proxyUrl };
-        }
-
-        // Use playwright-extra's chromium via Actor.launchPlaywright
-        this.browser = await Actor.launchPlaywright(launchOptions, { launcher: chromium });
-        this.logger.info('Browser launched.');
+        this.logger.info(`Launching browser with playwright-extra... Proxy: ${this.proxyUrl ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
         
         const userAgentStrings = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
@@ -112,21 +96,38 @@ class YouTubeViewWorker {
         ];
         const selectedUserAgent = userAgentStrings[random(userAgentStrings.length - 1)];
 
-        this.context = await this.browser.newContext({
-            bypassCSP: true, ignoreHTTPSErrors: true,
-            viewport: { width: 1280 + random(0, 640), height: 720 + random(0, 360) },
-            locale: ['en-US', 'en-GB', 'hu-HU'][random(2)], // Focus on specified countries
+        const launchOptions = {
+            headless: this.effectiveInput.headless,
+            args: [
+                '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
+                '--disable-gpu', '--disable-blink-features=AutomationControlled',
+                `--window-size=${1280 + random(0, 640)},${720 + random(0, 360)}`
+            ],
+            bypassCSP: true, // Context options can sometimes be passed at launch with playwright-extra
+            ignoreHTTPSErrors: true,
+            locale: ['en-US', 'en-GB', 'hu-HU'][random(2)],
             timezoneId: ['America/New_York', 'Europe/London', 'Europe/Budapest'][random(2)],
-            javaScriptEnabled: true, userAgent: selectedUserAgent,
-        });
-        this.logger.info('Browser context created.');
+            userAgent: selectedUserAgent,
+        };
+
+        if (this.proxyUrl) {
+            launchOptions.proxy = { server: this.proxyUrl };
+        }
+        
+        // playwright-extra's chromium.launch gives a Browser instance
+        const browser = await chromium.launch(launchOptions);
+        this.browserContext = await browser.newContext(); // Create a new context from the browser
+        
+        this.logger.info('Browser launched and context created with playwright-extra.');
+
 
         if (this.job.referer) {
             this.logger.info(`Setting referer: ${this.job.referer}`);
-            await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer });
+            await this.browserContext.setExtraHTTPHeaders({ 'Referer': this.job.referer });
         }
 
-        this.page = await this.context.newPage();
+        this.page = await this.browserContext.newPage();
         this.logger.info('New page created.');
         
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
@@ -141,12 +142,12 @@ class YouTubeViewWorker {
         try {
             await this.page.waitForSelector('video.html5-main-video', { timeout: 25000, state: 'attached' });
             this.logger.info('Video element attached.');
-            await this.page.evaluate(async () => {
+            await this.page.evaluate(async () => { 
                 const video = document.querySelector('video.html5-main-video');
                 if (video && video.readyState < 1) { 
                     return new Promise((resolve, reject) => {
                         const tid = setTimeout(() => reject(new Error('Video metadata load timeout (15s)')), 15000);
-                        video.onloadedmetadata = () => { clearTimeout(tid); resolve(undefined); }; // Resolve with undefined
+                        video.onloadedmetadata = () => { clearTimeout(tid); resolve(undefined); }; 
                         video.onerror = (e) => {clearTimeout(tid); reject(new Error('Video element error on metadata: ' + (e.target?.error?.message || 'Unknown'))); };
                     });
                 }
@@ -165,7 +166,7 @@ class YouTubeViewWorker {
             this.job.video_info.duration = 300;
         }
         
-        try { // Set quality
+        try { 
             if (await this.page.locator('.ytp-settings-button').first().isVisible({timeout: 10000})) {
                 await this.page.click('.ytp-settings-button');
                 await this.page.waitForTimeout(random(600, 1000));
@@ -173,25 +174,17 @@ class YouTubeViewWorker {
                 if (await qualityMenuItem.isVisible({timeout: 4000})) {
                     await qualityMenuItem.click();
                     await this.page.waitForTimeout(random(600, 1000));
-                    // Get all quality options and click the last one (lowest)
-                    const qualityOptions = await this.page.locator('.ytp-quality-menu .ytp-menuitem').allTextContents();
+                    const qualityOptions = await this.page.locator('.ytp-quality-menu .ytp-menuitem').all(); 
                     if (qualityOptions.length > 0) {
-                        // Find the last option that is not "Auto"
-                        let targetQualityIndex = -1;
-                        for(let i = qualityOptions.length - 1; i >= 0; i--) {
-                            if (!qualityOptions[i].toLowerCase().includes('auto')) {
-                                targetQualityIndex = i;
-                                break;
-                            }
-                        }
-                        if (targetQualityIndex === -1 && qualityOptions.length > 0) targetQualityIndex = qualityOptions.length - 1; // Fallback to absolute last if all are auto or weird
-
-                        if (targetQualityIndex !== -1) {
-                            await this.page.locator('.ytp-quality-menu .ytp-menuitem').nth(targetQualityIndex).click();
-                            this.logger.info(`Attempted to set video quality to: ${qualityOptions[targetQualityIndex]}.`);
-                        } else {this.logger.warn('No suitable quality option found.');}
+                        let lowestQualityOptionElement = qualityOptions[qualityOptions.length - 1]; 
+                         const text = await lowestQualityOptionElement.textContent();
+                         if (text && text.toLowerCase().includes('auto')) { 
+                             if (qualityOptions.length > 1) lowestQualityOptionElement = qualityOptions[qualityOptions.length - 2];
+                         }
+                        await lowestQualityOptionElement.click();
+                        this.logger.info(`Attempted to set video quality.`);
                     } else { this.logger.warn('No quality options found in menu.'); }
-                    await this.page.waitForTimeout(random(400,800));
+                    await this.page.waitForTimeout(random(400,700));
                 } else { this.logger.warn('Quality menu item not found.'); }
                 if (await this.page.locator('.ytp-settings-menu').isVisible({timeout:500})) {
                     await this.page.keyboard.press('Escape', {delay: random(100,300)});
@@ -204,24 +197,38 @@ class YouTubeViewWorker {
             }
         }
         
-        try { // Play video
-            const playButton = this.page.locator('button.ytp-large-play-button[aria-label*="Play"], button.ytp-play-button[aria-label*="Play"]:not([aria-label*="Pause"])').first();
-             if (await playButton.isVisible({ timeout: 10000 })) {
-                await playButton.click({timeout: 3000, force: true}); // force:true to help with overlays
-                this.logger.info('Clicked play button.');
-            } else {
-                this.logger.info('Play button not visible, attempting JS play.');
+        try { 
+            const playSelectors = [
+                'button.ytp-large-play-button[aria-label*="Play"]',
+                'button.ytp-play-button[aria-label*="Play"]',
+                '.ytp-play-button:not([aria-label*="Pause"])', 
+                'div[role="button"][aria-label*="Play"]'
+            ];
+            let playClicked = false;
+            for(const selector of playSelectors) {
+                const button = this.page.locator(selector).first();
+                if(await button.isVisible({timeout: 2000})) {
+                    await button.click({timeout: 2000, force: true});
+                    this.logger.info(`Clicked play button via selector: ${selector}`);
+                    playClicked = true;
+                    break;
+                }
+            }
+            if (!playClicked) {
+                 this.logger.info('No standard play button found, attempting JS play.');
                  await this.page.evaluate(() => {
                     const video = document.querySelector('video.html5-main-video');
-                    if (video && video.paused) video.play().catch(e => console.warn("JS play() failed:", e.message));
+                    if (video && video.paused) video.play().catch(e => console.warn("JS play() failed in startWorker:", e.message));
                 });
             }
-        } catch(e) { this.logger.warn(`Error clicking play: ${e.message.split('\n')[0]}`); }
+        } catch(e) { this.logger.warn(`Error trying to play video: ${e.message.split('\n')[0]}`); }
         await this.page.waitForTimeout(random(2000, 4500));
         return true;
     }
 
     async handleAds() {
+        // ... (Keep the existing handleAds logic from the previous full main.js)
+        // This function uses this.page.locator and this.logger, which are correctly set up.
         const adPlayingSelectors = ['.ad-showing', '.ytp-ad-player-overlay-instream-info', '.video-ads .ad-container:not([style*="display: none"])'];
         const adSkipButtonSelectors = ['.ytp-ad-skip-button-modern', '.ytp-ad-skip-button', '.videoAdUiSkipButton'];
 
@@ -267,22 +274,26 @@ class YouTubeViewWorker {
             this.logger.debug('Ad played long enough, but no skip button was actionable yet.');
         } else if (this.effectiveInput.autoSkipAds) {
             this.logger.debug(`Ad playing (for ${adElapsedTimeSeconds.toFixed(1)}s), target: ~${this.adWatchState.timeToWatchThisAdBeforeSkip}s.`);
+        } else {
+             this.logger.info('autoSkipAds is false. Watching ad.');
         }
-        return true; // Ad is still present or being watched
+        return true; 
     }
 
     async watchVideo() {
+        // ... (Keep the existing watchVideo logic from the previous full main.js)
+        // This function uses this.page.evaluate, this.logger, this.job, etc.
         if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed.');
 
         const videoDurationSeconds = this.job.video_info.duration;
         const targetWatchPercentage = this.job.watch_time;
-        const targetVideoPlayTimeSeconds = Math.max(10, (targetWatchPercentage / 100) * videoDurationSeconds); // Ensure at least 10s target
+        const targetVideoPlayTimeSeconds = Math.max(10, (targetWatchPercentage / 100) * videoDurationSeconds); 
 
         this.logger.info(`Watch target: ${targetWatchPercentage}% of ${videoDurationSeconds.toFixed(0)}s = ${targetVideoPlayTimeSeconds.toFixed(0)}s. URL: ${this.job.videoUrl}`);
         
         const overallWatchStartTime = Date.now();
-        const maxWatchLoopDurationMs = this.effectiveInput.timeout * 1000 * 0.90; // Max time for this specific video watching loop
-        const checkInterval = 5000; // ms
+        const maxWatchLoopDurationMs = this.effectiveInput.timeout * 1000 * 0.90; 
+        const checkInterval = 5000; 
 
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
@@ -322,7 +333,7 @@ class YouTubeViewWorker {
                 } catch (e) { this.logger.warn(`Resume fail: ${e.message.split('\n')[0]}`);}
             }
 
-            if (hasVideoEnded) { this.logger.info('Video ended.'); break; }
+            if (hasVideoEnded) { this.logger.info('Video playback ended.'); break; }
             if (!this.job.video_info.isLive && currentVideoTime >= targetVideoPlayTimeSeconds) {
                 this.logger.info(`Target VOD watch time (${targetVideoPlayTimeSeconds.toFixed(0)}s) reached.`); break;
             }
@@ -339,19 +350,23 @@ class YouTubeViewWorker {
     async kill() {
         this.killed = true;
         this.logger.info('Kill signal received. Closing browser context and browser.');
-        if (this.context) {
-            await this.context.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
-            this.context = null;
+        // Close page first
+        if (this.page && !this.page.isClosed()) {
+            await this.page.close().catch(e => this.logger.warn(`Error closing page: ${e.message}`));
+            this.page = null;
         }
-        if (this.browser) {
-            await this.browser.close().catch(e => this.logger.warn(`Error closing browser: ${e.message}`));
-            this.browser = null;
+        // Then close context
+        if (this.browserContext) { // Renamed from this.context to this.browserContext for clarity
+            await this.browserContext.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
+            this.browserContext = null;
         }
+        // Browser instance from chromium.launch() doesn't exist in this flow if we use launchPersistentContext and treat it as the context.
+        // If you switched back to chromium.launch() and then browser.newContext(), you'd close browser here.
     }
 }
 
 async function actorMainLogic() {
-    await Actor.init(); // Ensures Actor environment is ready
+    await Actor.init(); 
     log.info('Starting YouTube View Bot (Custom Playwright with Stealth).');
 
     const input = await Actor.getInput();
@@ -388,7 +403,7 @@ async function actorMainLogic() {
     for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
         const videoUrl = effectiveInput.videoUrls[i];
         const videoId = extractVideoId(videoUrl);
-        if (!videoId) { log.warn(`Invalid URL/ID: "${videoUrl}". Skipping.`); await Actor.pushData({ videoUrl, status: 'error', error: 'Invalid URL' }); continue; }
+        if (!videoId) { log.warn(`Invalid YouTube URL/ID: "${videoUrl}". Skipping.`); await Actor.pushData({ videoUrl, status: 'error', error: 'Invalid YouTube URL' }); continue; }
         const refererUrl = (effectiveInput.refererUrls && effectiveInput.refererUrls[i] && effectiveInput.refererUrls[i].trim() !== "") ? effectiveInput.refererUrls[i].trim() : null;
         jobs.push({ id: uuidv4(), videoUrl, videoId, referer: refererUrl, video_info: { duration: 300, isLive: false }, watch_time: effectiveInput.watchTimePercentage, jobIndex: i });
     }
@@ -400,20 +415,15 @@ async function actorMainLogic() {
     const activeWorkers = new Set();
     let jobCounter = 0;
 
-    const processJob = async (job) => { /* ... (same as previous full main.js) ... */ };
-    // ... (rest of processJob and concurrency logic from previous full main.js) ...
-    // For brevity, reusing the processJob and concurrency logic from the previous main.js,
-    // ensure it's copied here. The main changes were within the worker and top-level structure.
-
-    // Simplified: loop directly for now to ensure basic flow
-    for (const job of jobs) {
-        log.info(`Processing job ${job.jobIndex + 1}/${jobs.length} for Video ID: ${job.videoId}, Referer: ${job.referer || 'None'}`);
+    const processJob = async (job) => {
+        log.info(`Job ${job.jobIndex + 1}/${jobs.length}: VideoID=${job.videoId}, Referer=${job.referer || 'None'}`);
         let proxyUrlToUse = null;
         let proxyInfoForLog = 'None';
 
         if (actorProxyConfiguration) {
-            proxyUrlToUse = actorProxyConfiguration.newUrl(`session-${job.id.substring(0,8)}`);
-            proxyInfoForLog = `ApifyProxy (Session: ${job.id.substring(0,8)}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
+            const sessionId = `session_${job.id.substring(0, 8).replace(/-/g, '')}`; // Corrected session ID
+            proxyUrlToUse = actorProxyConfiguration.newUrl(sessionId);
+            proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
         } else if (effectiveInput.useProxies) {
              log.warn(`Proxy requested but not configured for VideoID: ${job.videoId}.`);
         }
@@ -427,10 +437,10 @@ async function actorMainLogic() {
         try {
             await worker.startWorker();
             const watchResult = await worker.watchVideo();
-            Object.assign(jobResultData, watchResult, { status: 'success' }); // watchResult includes timing details
+            Object.assign(jobResultData, watchResult, { status: 'success' }); 
             overallResults.successfulJobs++;
         } catch (error) {
-            log.error(`Error processing job ${job.videoUrl}: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,5).join(' | '), videoId: job.videoId });
+            log.error(`Error in job ${job.videoUrl}: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,5).join(' | '), videoId: job.videoId });
             jobResultData = { ...jobResultData, status: 'failure', error: error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,3).join(' | ')}` : '') };
             overallResults.failedJobs++;
         } finally {
@@ -439,16 +449,34 @@ async function actorMainLogic() {
         }
         overallResults.details.push(jobResultData);
         await Actor.pushData(jobResultData);
-
-        // Handle concurrencyInterval for sequential processing if concurrency is 1
-        if (effectiveInput.concurrency === 1 && job.jobIndex < jobs.length - 1 && effectiveInput.concurrencyInterval > 0) {
-            log.debug(`Waiting ${effectiveInput.concurrencyInterval}s before next video.`);
+    };
+    
+    const runPromises = [];
+    for (const job of jobs) {
+        if (activeWorkers.size >= effectiveInput.concurrency) {
+            await Promise.race(Array.from(activeWorkers)).catch(e => log.warn(`Error during Promise.race (worker slot wait): ${e.message}`));
+        }
+        const promise = processJob(job).catch(e => {
+            log.error(`Unhandled error directly from processJob promise for ${job.videoId}: ${e.message}`);
+            const errorResult = { jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId, status: 'catastrophic_processJob_failure', error: e.message };
+            Actor.pushData(errorResult); 
+            overallResults.failedJobs++;
+            overallResults.details.push(errorResult);
+        }).finally(() => {
+            activeWorkers.delete(promise);
+        });
+        activeWorkers.add(promise);
+        runPromises.push(promise);
+        jobCounter++;
+        if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
+            log.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}).`);
             await Apify.utils.sleep(effectiveInput.concurrencyInterval * 1000);
         }
     }
-    // If implementing full concurrency > 1, the Set-based activeWorkers loop would go here.
-    // For now, this direct loop is simpler to debug initial runs.
-
+    await Promise.all(runPromises.map(p => p.catch(e => { 
+        log.error(`Error caught by Promise.all on worker promise: ${e.message}`);
+        return e; // Prevents Promise.all from rejecting early
+    })));
 
     overallResults.endTime = new Date().toISOString();
     log.info('All jobs processed.', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }});
