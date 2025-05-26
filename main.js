@@ -1,279 +1,328 @@
 const Apify = require('apify');
-const { Actor } = Apify; // Destructure for easier use
+const { Actor, log } = Apify; // Using Actor.log for consistency
+const playwright = require('playwright-core'); // playwright-core for Apify
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { to } = require('await-to-js');
 const { v4: uuidv4 } = require('uuid');
 
-let youtube_selfbot_api;
-
-// Async import for youtube-selfbot-api
-(async () => {
-    try {
-        youtube_selfbot_api = (await import("youtube-selfbot-api")).selfbot;
-        console.log('MAIN.JS: youtube-selfbot-api imported successfully');
-    } catch (error) {
-        console.error('MAIN.JS: Failed to import youtube-selfbot-api:', error);
-        // Actor will likely fail if this doesn't load, which is handled in actorMainLogic
-    }
-})();
+chromium.use(StealthPlugin());
 
 function extractVideoId(url) {
-    if (!url || typeof url !== 'string') {
-        return null;
-    }
-    // YouTube URL patterns
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-        const youtubeMatch = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
-        if (youtubeMatch) return youtubeMatch[1];
-
-        const shortMatch = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
-        if (shortMatch) return shortMatch[1];
-
-        const embedMatch = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/);
-        if (embedMatch) return embedMatch[1];
+    if (!url || typeof url !== 'string') return null;
+    const patterns = [
+        /[?&]v=([a-zA-Z0-9_-]{11})/,
+        /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+        /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
+    ];
+    for (const pattern of patterns) {
+        const match = url.match(pattern);
+        if (match && match[1]) return match[1];
     }
     return null;
 }
 
 function random(min, max) {
-    if (max === undefined) { // If only one argument, it's max, min is 0
-        max = min;
-        min = 0;
-    }
+    if (max === undefined) { max = min; min = 0; }
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// Simplified consent handler
+async function handleYouTubeConsent(page, logger) {
+    logger.info('Checking for YouTube consent dialog...');
+    const consentButtonSelectors = [
+        'button[aria-label*="Accept all"]',
+        'button[aria-label*="Accept the use of cookies"]',
+        'form[action*="consent"] button[aria-label*="Accept"]',
+        'ytd-button-renderer:has-text("Accept all")',
+        'tp-yt-paper-button:has-text("ACCEPT ALL")'
+    ];
+
+    for (const selector of consentButtonSelectors) {
+        try {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 5000 })) {
+                logger.info(`Consent button found with selector: "${selector}". Clicking.`);
+                await button.click({ timeout: 3000 });
+                await page.waitForTimeout(1000 + random(500, 1500)); // Wait for dialog to disappear
+                logger.info('Consent button clicked.');
+                return true;
+            }
+        } catch (e) {
+            logger.debug(`Consent button selector "${selector}" not found or failed: ${e.message}`);
+        }
+    }
+    logger.info('No consent dialog found or handled.');
+    return false;
+}
+
+
 class YouTubeViewWorker {
-    constructor(job, effectiveInput, proxyUrl, logger) {
+    constructor(job, effectiveInput, proxyUrl, baseLogger) {
         this.job = job;
         this.effectiveInput = effectiveInput;
         this.proxyUrl = proxyUrl;
-        this.logger = logger.child({ prefix: `Worker-${job.videoId.substring(0, 6)}` });
+        this.logger = baseLogger.child({ prefix: `Worker-${job.videoId.substring(0, 6)}` });
         this.id = uuidv4();
         this.browser = null;
+        this.context = null;
         this.page = null;
-        this.watcherContext = null;
         this.killed = false;
-        this.adDetectedThisSession = false;
-        this.timeToWatchThisAdBeforeSkip = 0;
+        this.adWatchState = {
+            isWatchingAd: false,
+            timeToWatchThisAdBeforeSkip: 0,
+            adPlayedForEnoughTime: false
+        };
         this.lastReportedVideoTimeSeconds = 0;
     }
 
     async startWorker() {
-        if (!youtube_selfbot_api) {
-            this.logger.error('youtube-selfbot-api not available. Ensure it was imported correctly.');
-            throw new Error('youtube-selfbot-api not available');
-        }
-
-        const botOptions = {
+        this.logger.info(`Launching browser... Proxy: ${this.proxyUrl ? 'Yes' : 'No'}`);
+        const launchOptions = {
             headless: this.effectiveInput.headless,
-            proxy: this.proxyUrl, // selfbot API handles proxy string format
-            autoSkipAds: this.effectiveInput.autoSkipAds, // This is handled by our custom logic now mostly
-            timeout: this.effectiveInput.timeout * 1000,
-            muteAudio: true,
-            useAV1: this.effectiveInput.useAV1,
-            // workingFolder: '/tmp/youtube-viewer-cache-' + this.id, // Optional: for local cache if needed by API
+            args: ['--no-sandbox', '--disable-setuid-sandbox'], // Standard args for Apify
         };
-        this.logger.info(`Launching YouTube bot with options:`, { headless: botOptions.headless, proxy: !!botOptions.proxy, timeout: botOptions.timeout, useAV1: botOptions.useAV1 });
-        
-        const bot = new youtube_selfbot_api(botOptions);
-
-        const [launch_error, browserInstance] = await to(bot.launch());
-        if (launch_error) {
-            this.logger.error(`Error spawning browser: ${launch_error.message}`, { stack: launch_error.stack });
-            throw new Error(`Error spawning browser: ${launch_error.message}`);
-        }
-        this.browser = browserInstance;
-        this.logger.info(`Browser launched successfully`);
-
-        const [clear_storage_err] = await to(this.browser.clearStorage());
-        if (clear_storage_err) {
-            this.logger.warn(`Warning: Error clearing storage: ${clear_storage_err.message}`);
+        if (this.proxyUrl) {
+            launchOptions.proxy = { server: this.proxyUrl };
         }
 
-        const [init_loader_err] = await to(this.browser.initLoader());
-        if (init_loader_err) {
-            this.logger.error(`Error initializing browser loader: ${init_loader_err.message}`, { stack: init_loader_err.stack });
-            throw new Error(`Error initializing browser loader: ${init_loader_err.message}`);
+        this.browser = await Actor.launchPlaywright(launchOptions, { launcher: chromium });
+        this.logger.info('Browser launched.');
+
+        this.context = await this.browser.newContext({
+            bypassCSP: true,
+            ignoreHTTPSErrors: true,
+            // You can set viewport, locale, timezone here if desired from input
+            // viewport: { width: 1280, height: 720 },
+            // locale: 'en-US', // Consider making this configurable
+        });
+        this.logger.info('Browser context created.');
+
+        if (this.job.referer) {
+            this.logger.info(`Setting referer to: ${this.job.referer}`);
+            await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer });
         }
 
-        const [new_page_err, pageInstance] = await to(this.browser.newPage());
-        if (new_page_err) {
-            this.logger.error(`Error starting new page: ${new_page_err.message}`, { stack: new_page_err.stack });
-            throw new Error(`Error starting new page: ${new_page_err.message}`);
-        }
-        this.page = pageInstance;
+        this.page = await this.context.newPage();
+        this.logger.info('New page created.');
 
-        const gotoOptions = {
-            referer: this.job.referer || undefined,
-        };
-        this.logger.info(`Navigating to YouTube video ID: ${this.job.videoId}`, { referer: gotoOptions.referer || 'None' });
-        
-        const [goto_video_err, watcherCtx] = await to(this.page.gotoVideo('direct', this.job.videoId, gotoOptions));
-        if (goto_video_err) {
-            this.logger.error(`Error going to video: ${goto_video_err.message}`, { stack: goto_video_err.stack });
-            throw new Error(`Error going to video: ${goto_video_err.message}`);
-        }
-        this.watcherContext = watcherCtx;
-        this.logger.info(`Successfully navigated to video. Watcher context obtained.`);
-        
-        // Fetch actual video info if not already present (duration is important)
-        if (!this.job.video_info || !this.job.video_info.duration) {
-            const [infoErr, videoInfo] = await to(this.watcherContext.getVideoInfo());
-            if (infoErr || !videoInfo) {
-                this.logger.warn(`Could not fetch video info for ${this.job.videoId}, using estimate. Error: ${infoErr ? infoErr.message : 'No info'}`);
-                this.job.video_info = { duration: 300, isLive: false, ...this.job.video_info }; // Default duration 5 mins
+        this.logger.info(`Navigating to video URL: ${this.job.videoUrl}`);
+        await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 });
+        this.logger.info('Navigation complete.');
+
+        await handleYouTubeConsent(this.page, this.logger);
+
+        // Attempt to get video duration (can be unreliable without APIs)
+        try {
+            await this.page.waitForSelector('video.html5-main-video', { timeout: 15000 });
+            const duration = await this.page.evaluate(() => {
+                const video = document.querySelector('video.html5-main-video');
+                return video ? video.duration : null;
+            });
+            if (duration && !isNaN(duration)) {
+                this.job.video_info.duration = Math.round(duration);
+                this.logger.info(`Video duration fetched: ${this.job.video_info.duration}s`);
             } else {
-                this.job.video_info = {
-                    duration: parseFloat(videoInfo.duration) || 300,
-                    isLive: videoInfo.isLive || false,
-                    title: videoInfo.title || 'Unknown Title'
-                };
-                this.logger.info(`Fetched video info: Duration=${this.job.video_info.duration}s, Live=${this.job.video_info.isLive}, Title="${this.job.video_info.title}"`);
+                this.logger.warn('Could not determine video duration from player, using default.');
             }
+        } catch (e) {
+            this.logger.warn(`Error fetching video duration: ${e.message}. Using default.`);
         }
-
-
-        if (!this.job.video_info.isLive) {
-            const [seek_err] = await to(this.watcherContext.seek(0));
-            if (seek_err) this.logger.warn(`Warning: Could not seek to video start: ${seek_err.message}`);
-            else this.logger.info('Seeked to video start (0s).');
-        }
-
-        const [resolution_err] = await to(this.watcherContext.setResolution("tiny"));
-        if(resolution_err) this.logger.warn(`Warning: Could not set resolution to tiny: ${resolution_err.message}`);
-        else this.logger.info('Set video resolution to "tiny".');
-
-        const [playErr] = await to(this.watcherContext.play());
-        if (playErr) this.logger.warn(`Could not explicitly play video: ${playErr.message}. It might autoplay.`);
-        else this.logger.info('Video play command issued.');
         
-        this.logger.info(`YouTube worker started for video ID: ${this.job.videoId}`);
+        // Try to set low quality
+        try {
+            await this.page.waitForSelector('.ytp-settings-button', { timeout: 10000 });
+            await this.page.click('.ytp-settings-button');
+            await this.page.waitForTimeout(500);
+            // This part is highly dependent on current YouTube UI structure
+            const qualityMenu = this.page.locator('.ytp-menuitem-label:has-text("Quality")').first();
+            if (await qualityMenu.isVisible({timeout: 2000})) {
+                await qualityMenu.click();
+                await this.page.waitForTimeout(500);
+                const lowestQuality = this.page.locator('.ytp-quality-menu .ytp-menuitem-label').locator('span:not(:empty)').last(); // Try to get the last quality option
+                 if (await lowestQuality.isVisible({timeout: 2000})) {
+                    await lowestQuality.click();
+                    this.logger.info('Attempted to set lowest video quality.');
+                } else {this.logger.warn('Lowest quality option not found.');}
+            } else {this.logger.warn('Quality menu not found.');}
+             await this.page.keyboard.press('Escape'); // Close settings
+        } catch (e) {
+            this.logger.warn(`Could not set video quality: ${e.message}`);
+        }
+        
+        // Try to play the video
+        const playButton = this.page.locator('button.ytp-large-play-button, button.ytp-play-button').first();
+        if (await playButton.isVisible({ timeout: 5000 })) {
+            await playButton.click();
+            this.logger.info('Clicked play button.');
+        } else {
+             this.logger.info('Play button not immediately visible, video might autoplay or be unstartable.');
+        }
+
         return true;
     }
 
-    async handleAd(ad) {
-        this.logger.info(`Handling ad. Type: ${ad.type}, Duration: ${ad.duration || 'N/A'}, CanSkip: ${ad.canSkip}, CurrentTime: ${ad.currentTime || 'N/A'}`);
+    async handleAds() {
+        const adSkipButtonSelectors = [
+            '.ytp-ad-skip-button-modern',
+            '.ytp-ad-skip-button',
+            '.videoAdUiSkipButton', // More generic
+        ];
+        const adPlayingSelectors = [
+            '.ad-showing',
+            '.ytp-ad-player-overlay-instream-info',
+             '.video-ads' // If this container has content and is visible
+        ];
 
-        if (ad.type === "small" || ad.type === "popup" || ad.type === "banner") { // Example non-video ad types
-            const [ad_skip_err] = await to(this.watcherContext.skipAd(false)); // false might mean don't wait for skip button
-            if (!ad_skip_err) this.logger.info(`Attempted to skip/close small/banner ad.`);
-            else this.logger.warn(`Failed to skip small/banner ad: ${ad_skip_err.message}`);
-            return;
-        }
-
-        if (ad.type === "video") {
-            if (this.effectiveInput.autoSkipAds) {
-                if (!this.adDetectedThisSession) {
-                    this.adDetectedThisSession = true;
-                    const minSkip = this.effectiveInput.skipAdsAfter[0];
-                    const maxSkip = this.effectiveInput.skipAdsAfter[1];
-                    this.timeToWatchThisAdBeforeSkip = random(minSkip, maxSkip);
-                    this.logger.info(`Video ad detected. Will attempt to skip after ~${this.timeToWatchThisAdBeforeSkip}s of ad playback.`);
-                }
-
-                if (ad.canSkip) {
-                    if (ad.currentTime >= this.timeToWatchThisAdBeforeSkip) {
-                        const [ad_skip_err] = await to(this.watcherContext.skipAd(true));
-                        if (!ad_skip_err) {
-                            this.logger.info(`Skipped video ad after ${ad.currentTime.toFixed(1)}s (target was ~${this.timeToWatchThisAdBeforeSkip}s).`);
-                            this.adDetectedThisSession = false;
-                        } else {
-                             this.logger.warn(`Failed to skip video ad (was skippable): ${ad_skip_err.message}`);
-                        }
-                    } else {
-                        this.logger.debug(`Video ad playing (${ad.currentTime.toFixed(1)}s / ${ad.duration ? ad.duration.toFixed(1) : 'N/A'}s). Waiting for ~${this.timeToWatchThisAdBeforeSkip}s to skip.`);
-                    }
-                } else {
-                     this.logger.debug(`Video ad playing (${ad.currentTime.toFixed(1)}s / ${ad.duration ? ad.duration.toFixed(1) : 'N/A'}s). Not skippable yet.`);
-                }
-            } else if (ad.canSkip) { // Not autoSkipAds, but if it's skippable by YouTube, skip immediately
-                const [ad_skip_err] = await to(this.watcherContext.skipAd(true));
-                if (!ad_skip_err) {
-                    this.logger.info(`Immediately skipped ad (autoSkipAds=false, but ad.canSkip=true).`);
-                    this.adDetectedThisSession = false;
-                } else {
-                    this.logger.warn(`Failed to immediately skip video ad: ${ad_skip_err.message}`);
-                }
+        let adIsCurrentlyPlaying = false;
+        for (const selector of adPlayingSelectors) {
+            if (await this.page.locator(selector).first().isVisible({ timeout: 500 })) {
+                adIsCurrentlyPlaying = true;
+                break;
             }
         }
+
+        if (!adIsCurrentlyPlaying) {
+            if (this.adWatchState.isWatchingAd) {
+                this.logger.info('Ad finished or disappeared.');
+                this.adWatchState.isWatchingAd = false;
+            }
+            return false; // No ad playing
+        }
+        
+        // Ad is playing
+        if (!this.adWatchState.isWatchingAd) { // First detection of this ad
+            this.adWatchState.isWatchingAd = true;
+            this.adWatchState.adPlayedForEnoughTime = false; // Reset for current ad
+            const minSkip = this.effectiveInput.skipAdsAfter[0];
+            const maxSkip = this.effectiveInput.skipAdsAfter[1];
+            this.adWatchState.timeToWatchThisAdBeforeSkip = random(minSkip, maxSkip);
+            this.logger.info(`Ad detected. Will attempt skip after ~${this.adWatchState.timeToWatchThisAdBeforeSkip}s.`);
+            this.adWatchState.adStartTime = Date.now();
+        }
+        
+        const adElapsedTime = (Date.now() - (this.adWatchState.adStartTime || Date.now())) / 1000;
+        if (adElapsedTime >= this.adWatchState.timeToWatchThisAdBeforeSkip) {
+            this.adWatchState.adPlayedForEnoughTime = true;
+        }
+
+        if (this.effectiveInput.autoSkipAds && this.adWatchState.adPlayedForEnoughTime) {
+            for (const selector of adSkipButtonSelectors) {
+                const skipButton = this.page.locator(selector).first();
+                if (await skipButton.isVisible({ timeout: 500 }) && await skipButton.isEnabled({ timeout: 500 })) {
+                    this.logger.info(`Attempting to click ad skip button: ${selector}`);
+                    await skipButton.click({ timeout: 1000, force: true }); // Force might be needed for overlays
+                    await this.page.waitForTimeout(1000 + random(500, 1000)); // Wait for skip action
+                    this.adWatchState.isWatchingAd = false; // Assume ad skipped
+                    return true; // Ad handled
+                }
+            }
+            this.logger.debug('Ad playing, watched for enough time, but no skip button found/enabled yet.');
+        } else if (this.effectiveInput.autoSkipAds) {
+            this.logger.debug(`Ad playing, but not yet watched for ${this.adWatchState.timeToWatchThisAdBeforeSkip}s. Current ad play time: ${adElapsedTime.toFixed(1)}s`);
+        }
+        return true; // Ad is still playing, but being "handled" (watched)
     }
 
     async watchVideo() {
-        if (!this.watcherContext) {
-            this.logger.error('Watcher context not initialized. Cannot watch video.');
-            throw new Error('Watcher context not initialized');
-        }
+        if (!this.page) throw new Error('Page not initialized for watching.');
 
-        const videoDurationSeconds = this.job.video_info.duration;
-        const targetWatchPercentage = this.job.watch_time; // This is the percentage from input
-        const targetWatchTimeSeconds = (targetWatchPercentage / 100) * videoDurationSeconds;
+        const videoDurationSeconds = this.job.video_info.duration || 300; // Fallback if duration not found
+        const targetWatchPercentage = this.job.watch_time;
+        const targetVideoPlayTimeSeconds = (targetWatchPercentage / 100) * videoDurationSeconds;
+
+        this.logger.info(`Starting to watch video. Target: ${targetWatchPercentage}% of ${videoDurationSeconds.toFixed(0)}s = ${targetVideoPlayTimeSeconds.toFixed(0)}s. Video URL: ${this.job.videoUrl}`);
         
-        this.logger.info(`Starting to watch video. Target: ${targetWatchPercentage}% of ${videoDurationSeconds.toFixed(0)}s = ${targetWatchTimeSeconds.toFixed(0)}s.`);
-
-        const loopStartTime = Date.now();
-        let actualOverallWatchDurationMs = 0;
-        const checkInterval = 3000; // Check every 3 seconds
+        const overallWatchStartTime = Date.now();
+        const maxWatchLoopDurationMs = this.effectiveInput.timeout * 1000 * 0.9; // Max time for this loop
+        const checkInterval = 5000; // Check every 5 seconds
 
         while (!this.killed) {
-            const elapsedTimeInLoopMs = Date.now() - loopStartTime;
+            const loopIterationStartTime = Date.now();
 
-            // Check for ads
-            const [ad_err, ad] = await to(this.watcherContext.isAdPlaying());
-            if (ad_err) {
-                this.logger.warn(`Error checking for ad: ${ad_err.message}.`);
-            } else if (ad && Object.keys(ad).length > 0) { // Check if 'ad' is a non-empty object
-                await this.handleAd(ad);
-                await Apify.utils.sleep(checkInterval); // Wait after ad handling
-                continue; // Re-evaluate conditions
-            } else {
-                 this.adDetectedThisSession = false; // No ad, reset ad detection state
-            }
-
-            // Get current video playback time
-            const [time_err, currentVideoTime] = await to(this.watcherContext.time());
-            if (time_err) {
-                this.logger.warn(`Error getting current video time: ${time_err.message}`);
-            } else if (currentVideoTime !== undefined) {
-                this.lastReportedVideoTimeSeconds = currentVideoTime;
-                this.logger.debug(`Current video playback time: ${currentVideoTime.toFixed(2)}s`);
-            }
-
-            // Check if target video content watch time is reached
-            if (!this.job.video_info.isLive && this.lastReportedVideoTimeSeconds >= targetWatchTimeSeconds) {
-                this.logger.info(`Target video content watch time (${targetWatchTimeSeconds.toFixed(0)}s) reached. Current playback time: ${this.lastReportedVideoTimeSeconds.toFixed(2)}s.`);
+            if (Date.now() - overallWatchStartTime > maxWatchLoopDurationMs) {
+                this.logger.warn('Watch loop duration exceeded safety timeout. Ending watch.');
                 break;
             }
+
+            const adWasPlaying = await this.handleAds();
+            if (adWasPlaying) {
+                this.logger.debug('Ad is being handled, continuing watch loop.');
+                await Apify.utils.sleep(checkInterval);
+                continue;
+            }
             
-            // For live streams, or if overall time limit is a concern (e.g. timeout / 2)
-            if (this.job.video_info.isLive && elapsedTimeInLoopMs >= (targetWatchTimeSeconds * 1000)) {
-                 this.logger.info(`Live stream target watch duration (${targetWatchTimeSeconds.toFixed(0)}s) reached.`);
+            // If no ad, check video state
+            let currentVideoTime = 0;
+            let isVideoPaused = true;
+            let hasVideoEnded = false;
+
+            try {
+                const videoState = await this.page.evaluate(() => {
+                    const video = document.querySelector('video.html5-main-video');
+                    if (!video) return { currentTime: 0, paused: true, ended: true, readyState: 0 }; // No video element means ended
+                    return {
+                        currentTime: video.currentTime,
+                        paused: video.paused,
+                        ended: video.ended,
+                        readyState: video.readyState
+                    };
+                });
+                currentVideoTime = videoState.currentTime || 0;
+                isVideoPaused = videoState.paused;
+                hasVideoEnded = videoState.ended;
+
+                if (videoState.readyState < 2 && currentVideoTime === 0) { // HAVE_NOTHING or HAVE_METADATA but no progress
+                    this.logger.debug('Video readyState low and no playback, might be buffering or stuck.');
+                }
+
+            } catch (e) {
+                this.logger.warn(`Error getting video state: ${e.message}`);
+                // Potentially break if page is not responding
+                if (e.message.includes('Target closed')) throw e;
+            }
+            this.lastReportedVideoTimeSeconds = currentVideoTime;
+            this.logger.debug(`Video time: ${currentVideoTime.toFixed(2)}s. Paused: ${isVideoPaused}. Ended: ${hasVideoEnded}`);
+
+
+            if (isVideoPaused && !hasVideoEnded && currentVideoTime < targetVideoPlayTimeSeconds) {
+                this.logger.info('Video is paused, attempting to play.');
+                try {
+                    await this.page.evaluate(() => {
+                        const video = document.querySelector('video.html5-main-video');
+                        if (video && video.paused) video.play();
+                    });
+                     await this.page.locator('button.ytp-play-button[aria-label*="Play"]').first().click({timeout: 1000}).catch(() => {});
+                } catch (e) { this.logger.warn(`Failed to JS play: ${e.message}`);}
+            }
+
+            if (hasVideoEnded) {
+                this.logger.info('Video has ended.');
+                break;
+            }
+
+            if (!this.job.video_info.isLive && currentVideoTime >= targetVideoPlayTimeSeconds) {
+                this.logger.info(`Target video content watch time (${targetVideoPlayTimeSeconds.toFixed(0)}s) reached.`);
+                break;
+            }
+            if (this.job.video_info.isLive && (Date.now() - overallWatchStartTime >= targetVideoPlayTimeSeconds * 1000)) {
+                 this.logger.info(`Live stream target watch duration (${targetVideoPlayTimeSeconds.toFixed(0)}s) reached.`);
                  break;
             }
-            if (elapsedTimeInLoopMs >= this.effectiveInput.timeout * 1000 * 0.9) { // Safety break near overall timeout
-                this.logger.warn('Approaching overall job timeout. Ending watch loop.');
-                break;
-            }
-
-            // Check if video ended
-            const [ended_err, hasEnded] = await to(this.watcherContext.hasEnded());
-            if (ended_err) {
-                this.logger.warn(`Error checking if video ended: ${ended_err.message}`);
-            } else if (hasEnded) {
-                this.logger.info('Video has ended according to watcherContext.');
-                break;
-            }
             
-            await Apify.utils.sleep(checkInterval);
+            const timeSpentInIteration = Date.now() - loopIterationStartTime;
+            await Apify.utils.sleep(Math.max(0, checkInterval - timeSpentInIteration));
         }
 
-        actualOverallWatchDurationMs = Date.now() - loopStartTime;
-        this.logger.info(`Finished watch loop. Total time in loop: ${(actualOverallWatchDurationMs / 1000).toFixed(1)}s. Last reported video time: ${this.lastReportedVideoTimeSeconds.toFixed(2)}s.`);
+        const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
+        this.logger.info(`Finished watch. Total time: ${(actualOverallWatchDurationMs / 1000).toFixed(1)}s. Last video time: ${this.lastReportedVideoTimeSeconds.toFixed(2)}s.`);
 
         return {
             status: 'success',
             actualOverallWatchDurationMs,
             lastReportedVideoTimeSeconds: this.lastReportedVideoTimeSeconds,
-            targetWatchTimeSeconds,
+            targetVideoPlayTimeSeconds,
             videoId: this.job.videoId,
             videoUrl: this.job.videoUrl,
             refererUsed: this.job.referer
@@ -282,72 +331,47 @@ class YouTubeViewWorker {
 
     async kill() {
         this.killed = true;
-        this.logger.info(`Kill signal received. Closing browser if active.`);
+        this.logger.info(`Kill signal received. Closing browser context and browser.`);
+        if (this.context) {
+            await this.context.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
+            this.context = null;
+        }
         if (this.browser) {
-            const [close_err] = await to(this.browser.close());
-            if (close_err) this.logger.warn(`Error closing browser: ${close_err.message}`);
-            else this.logger.info('Browser closed successfully.');
+            await this.browser.close().catch(e => this.logger.warn(`Error closing browser: ${e.message}`));
             this.browser = null;
         }
     }
 }
 
+
 async function actorMainLogic() {
     await Actor.init();
-    const logger = Actor.log;
-    logger.info('Starting YouTube View Bot (Referer & Proxy Focused - Apify).');
-
-    if (!youtube_selfbot_api) {
-        logger.error("youtube-selfbot-api did not load. Actor cannot continue.");
-        await Actor.fail("Critical dependency youtube-selfbot-api failed to load.");
-        return;
-    }
+    log.info('Starting YouTube View Bot (Custom Playwright - Referer & Proxy Focused - Apify).');
 
     const input = await Actor.getInput();
     if (!input) {
-        logger.error('No input provided. Exiting.');
+        log.error('No input provided. Exiting.');
         await Actor.fail('No input provided.');
         return;
     }
 
-    const defaultInput = { // Ensure these match your INPUT_SCHEMA.json defaults
-        videoUrls: [],
-        refererUrls: [],
-        watchTimePercentage: 85,
-        useProxies: true,
-        proxyCountry: 'US',
-        proxyGroups: ['RESIDENTIAL'],
-        headless: true,
-        autoSkipAds: true,
-        skipAdsAfterMinSeconds: 5,
-        skipAdsAfterMaxSeconds: 12,
-        timeout: 120,
-        concurrency: 1,
-        concurrencyInterval: 5,
+    const defaultInput = {
+        videoUrls: [], refererUrls: [], watchTimePercentage: 85,
+        useProxies: true, proxyCountry: 'US', proxyGroups: ['RESIDENTIAL'],
+        headless: true, autoSkipAds: true, skipAdsAfterMinSeconds: 5, skipAdsAfterMaxSeconds: 12,
+        timeout: 120, concurrency: 1, concurrencyInterval: 5,
     };
-
     const effectiveInput = { ...defaultInput, ...input };
-    // Convert min/max ad skip times to array for worker
     effectiveInput.skipAdsAfter = [
-        Math.max(0, effectiveInput.skipAdsAfterMinSeconds || 0), // Ensure non-negative
-        Math.max(effectiveInput.skipAdsAfterMinSeconds || 0, effectiveInput.skipAdsAfterMaxSeconds || (effectiveInput.skipAdsAfterMinSeconds || 0) + 7) // Ensure max >= min
+        Math.max(0, effectiveInput.skipAdsAfterMinSeconds || 0),
+        Math.max(effectiveInput.skipAdsAfterMinSeconds || 0, effectiveInput.skipAdsAfterMaxSeconds || (effectiveInput.skipAdsAfterMinSeconds || 0) + 7)
     ];
 
-    logger.info('Effective input settings:', {
-        videoUrlsCount: effectiveInput.videoUrls.length,
-        watchTimePercentage: effectiveInput.watchTimePercentage,
-        useProxies: effectiveInput.useProxies,
-        proxyCountry: effectiveInput.proxyCountry,
-        headless: effectiveInput.headless,
-        autoSkipAds: effectiveInput.autoSkipAds,
-        skipAdsAfter: effectiveInput.skipAdsAfter,
-        timeout: effectiveInput.timeout,
-        concurrency: effectiveInput.concurrency
-    });
+    log.info('Effective input settings:', { /* ... selective logging ... */ });
 
     if (!effectiveInput.videoUrls || effectiveInput.videoUrls.length === 0) {
-        logger.error('No videoUrls provided in input. Exiting.');
-        await Actor.fail('No videoUrls provided in input.');
+        log.error('No videoUrls provided. Exiting.');
+        await Actor.fail('No videoUrls provided.');
         return;
     }
 
@@ -359,150 +383,104 @@ async function actorMainLogic() {
         }
         try {
             actorProxyConfiguration = await Actor.createProxyConfiguration(proxyOpts);
-            logger.info(`Apify Proxy Configured. Country: ${proxyOpts.countryCode || 'Any (group default)'}, Groups: ${effectiveInput.proxyGroups.join(', ')}`);
+            log.info(`Apify Proxy Configured. Country: ${proxyOpts.countryCode || 'Any'}, Groups: ${effectiveInput.proxyGroups.join(', ')}`);
         } catch (e) {
-            logger.error(`Failed to create Apify Proxy Configuration: ${e.message}. Continuing without Apify residential proxies.`, { error: e });
-            actorProxyConfiguration = null; // Ensure it's null if creation fails
+            log.error(`Failed to create Apify Proxy: ${e.message}. Proceeding without proxy if other options are not set.`);
+            actorProxyConfiguration = null;
         }
     }
-
 
     const jobs = [];
     for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
         const videoUrl = effectiveInput.videoUrls[i];
         const videoId = extractVideoId(videoUrl);
-
         if (!videoId) {
-            logger.warn(`Could not extract video ID from URL: "${videoUrl}". Skipping.`);
-            await Actor.pushData({ videoUrl, status: 'error', error: 'Invalid YouTube URL or could not extract ID' });
+            log.warn(`Invalid YouTube URL or ID extraction failed: "${videoUrl}". Skipping.`);
+            await Actor.pushData({ videoUrl, status: 'error', error: 'Invalid YouTube URL' });
             continue;
         }
-
         const refererUrl = (effectiveInput.refererUrls && effectiveInput.refererUrls[i] && effectiveInput.refererUrls[i].trim() !== "")
             ? effectiveInput.refererUrls[i].trim()
             : null;
-
         jobs.push({
-            id: uuidv4(), // Unique ID for this job run
-            videoUrl,
-            videoId,
-            platform: 'youtube',
-            watch_type: 'direct', // For selfbot API, 'direct' is used with referer in options
-            referer: refererUrl,
-            video_info: { duration: 300, isLive: false }, // Placeholder, worker will try to update
-            watch_time: effectiveInput.watchTimePercentage, // Pass percentage
-            jobIndex: i // For logging and reference
+            id: uuidv4(), videoUrl, videoId, platform: 'youtube', referer: refererUrl,
+            video_info: { duration: 300, isLive: false }, // Default, worker updates
+            watch_time: effectiveInput.watchTimePercentage, jobIndex: i,
         });
     }
 
     if (jobs.length === 0) {
-        logger.error('No valid jobs to process after parsing input. Exiting.');
-        await Actor.fail('No valid video URLs to process.');
+        log.error('No valid jobs. Exiting.');
+        await Actor.fail('No valid jobs.');
         return;
     }
-    logger.info(`Created ${jobs.length} job(s) to process.`);
+    log.info(`Created ${jobs.length} job(s).`);
 
     const overallResults = { totalJobs: jobs.length, successfulJobs: 0, failedJobs: 0, details: [], startTime: new Date().toISOString() };
     const activeWorkers = new Set();
-    let jobIndex = 0;
+    let jobCounter = 0;
 
     const processJob = async (job) => {
-        logger.info(`Starting job ${job.jobIndex + 1}/${jobs.length} for Video ID: ${job.videoId}`);
+        log.info(`Starting job ${job.jobIndex + 1}/${jobs.length} for Video ID: ${job.videoId}`);
         let proxyUrlToUse = null;
         let proxyInfoForLog = 'None';
-
         if (actorProxyConfiguration) {
-            proxyUrlToUse = actorProxyConfiguration.newUrl(`session-${job.id}`);
-            proxyInfoForLog = `ApifyProxy (Session: session-${job.id.substring(0,6)})`;
-            logger.info(`Using proxy: ${proxyInfoForLog} for job ${job.videoId}`);
-        } else if (effectiveInput.useProxies) {
-             logger.warn(`Apify Proxy was enabled in input, but configuration failed. Proceeding without proxy for job ${job.videoId}.`);
+            proxyUrlToUse = actorProxyConfiguration.newUrl(`session-${job.id.substring(0,8)}`);
+            proxyInfoForLog = `ApifyProxy (Session: ${job.id.substring(0,8)}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
         }
-
-
-        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlToUse, logger);
-        let jobResultData = {
-            jobId: job.id,
-            videoUrl: job.videoUrl,
-            videoId: job.videoId,
-            refererRequested: job.referer,
-            proxyUsed: proxyInfoForLog,
-            status: 'initiated',
-            error: null,
-        };
-
+        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlToUse, log);
+        let jobResultData = { /* ... initial data ... */ };
         try {
             await worker.startWorker();
             const watchResult = await worker.watchVideo();
-            Object.assign(jobResultData, watchResult); // watchResult already includes status: 'success'
-            jobResultData.status = 'success'; // Ensure it's success if no error
+            Object.assign(jobResultData, watchResult, { status: 'success', proxyUsed: proxyInfoForLog, refererRequested: job.referer });
             overallResults.successfulJobs++;
         } catch (error) {
-            logger.error(`Error processing job for ${job.videoUrl}: ${error.message}`, { stack: error.stack, videoId: job.videoId });
-            jobResultData.status = 'failure';
-            jobResultData.error = error.message + (error.stack ? `\nStack: ${error.stack}` : '');
+            log.error(`Error in job ${job.videoUrl}: ${error.message}`, { stack: error.stack, videoId: job.videoId });
+            jobResultData = { ...jobResultData, status: 'failure', error: error.message, proxyUsed: proxyInfoForLog, refererRequested: job.referer };
             overallResults.failedJobs++;
         } finally {
             await worker.kill();
-            logger.info(`Finished job ${job.jobIndex + 1}/${jobs.length} for Video ID: ${job.videoId} with status: ${jobResultData.status}`);
+             log.info(`Finished job ${job.jobIndex + 1}/${jobs.length} for Video ID: ${job.videoId}. Status: ${jobResultData.status}`);
         }
-        
         overallResults.details.push(jobResultData);
         await Actor.pushData(jobResultData);
     };
 
-
-    // Concurrency management
     const runPromises = [];
     for (const job of jobs) {
         if (activeWorkers.size >= effectiveInput.concurrency) {
-            await Promise.race(activeWorkers); // Wait for one worker to finish
+            await Promise.race(activeWorkers);
         }
-
         const promise = processJob(job).finally(() => {
             activeWorkers.delete(promise);
         });
         activeWorkers.add(promise);
         runPromises.push(promise);
-
-        if (effectiveInput.concurrencyInterval > 0 && jobIndex < jobs.length - 1) {
-            logger.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job batch.`);
+        jobCounter++;
+        if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
+            log.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next.`);
             await Apify.utils.sleep(effectiveInput.concurrencyInterval * 1000);
         }
-        jobIndex++;
     }
-
-    await Promise.all(runPromises); // Wait for all dispatched jobs
+    await Promise.all(runPromises);
 
     overallResults.endTime = new Date().toISOString();
-    logger.info('All jobs processed. Final results summary:', {
-        totalJobs: overallResults.totalJobs,
-        successfulJobs: overallResults.successfulJobs,
-        failedJobs: overallResults.failedJobs,
-    });
+    log.info('All jobs processed.', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }});
     await Actor.setValue('OVERALL_RESULTS', overallResults);
-
-    logger.info('Actor finished.');
+    log.info('Actor finished successfully.');
     await Actor.exit();
 }
 
-// Apify Actor entry point
 Apify.main(async () => {
     try {
-        // A short delay to ensure async import of youtube-selfbot-api completes
-        if (!youtube_selfbot_api) {
-            console.log('MAIN.JS: Waiting a few seconds for youtube-selfbot-api to potentially load...');
-            await new Promise(resolve => setTimeout(resolve, 3000));
-        }
         await actorMainLogic();
     } catch (error) {
-        console.error('ACTOR_MAIN_LOGIC: CRITICAL UNHANDLED ERROR IN TOP LEVEL:', error.message, { stack: error.stack });
-        if (Actor.isAtHome()) { // Check if running on Apify platform
+        log.exception(error, 'Critical unhandled error in Apify.main:');
+        if (Actor.isAtHome()) {
             await Actor.fail(`Critical error: ${error.message}`);
         } else {
             process.exit(1);
         }
     }
 });
-
-console.log('MAIN.JS: Script fully loaded and main execution path determined.');
