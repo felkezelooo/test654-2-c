@@ -40,10 +40,7 @@
                     "STATICUS"
                 ]
             },
-            "editor": "select", // For multi-select from enum items
-            "editor Zeyos": { // Example of how some UIs might handle multi-select spec
-                "mode": "multiple"
-            }
+            "editor": "select"
         },
         "proxyCountry": {
             "title": "Proxy Country",
@@ -71,7 +68,7 @@
             "items": {
                 "type": "integer"
             },
-            "editor": "json" // Or stringList if you prefer users to type numbers
+            "editor": "json"
         },
         "useAV1": {
             "title": "Use AV1 Codec",
