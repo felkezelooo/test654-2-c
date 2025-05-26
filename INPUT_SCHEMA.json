@@ -1,0 +1,139 @@
+{
+    "title": "YouTube & Rumble View Bot",
+    "description": "Boost views on YouTube and Rumble videos using residential proxies with country selection",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "videoUrls": {
+            "title": "Video URLs",
+            "type": "array",
+            "description": "REQUIRED: List of YouTube or Rumble video URLs to view. Other customization arrays below must match this list by order if used.",
+            "editor": "stringList",
+            "prefill": [
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "https://www.youtube.com/watch?v=anotherVideo",
+                "https://rumble.com/v2j3hyu-example-video.html"
+            ]
+        },
+        "watchTypes": {
+            "title": "Watch Types (Optional)",
+            "type": "array",
+            "description": "OPTIONAL: How to reach each corresponding video in 'Video URLs'. If shorter than 'Video URLs', remaining videos use 'direct'. Options: direct, referer, search.",
+            "editor": "stringList",
+            "default": ["direct"]
+        },
+        "refererUrls": {
+            "title": "Referer URLs (Optional)",
+            "type": "array",
+            "description": "OPTIONAL: Corresponding Referer URL if 'Watch Type' is 'referer'. Ignored otherwise. Ensure this list aligns with 'Video URLs'.",
+            "editor": "stringList",
+            "default": ["https://www.google.com/"]
+        },
+        "searchKeywordsForEachVideo": {
+            "title": "Search Keywords (Optional, for 'search' Watch Type)",
+            "type": "array",
+            "description": "OPTIONAL: For each video where 'Watch Type' is 'search'. Each item should be a comma-separated string of keywords for the corresponding video. One keyword will be chosen randomly from that string. Example for 2 videos: \"keyword1, keyword2 for video1\", \"keyword for video2\"",
+            "editor": "stringList",
+            "default": ["funny cat videos, cute kittens"]
+        },
+        "watchTimePercentage": {
+            "title": "Watch Time Percentage",
+            "type": "integer",
+            "description": "Percentage of the video to watch (30-100)",
+            "minimum": 30,
+            "maximum": 100,
+            "default": 80
+        },
+        "useProxies": {
+            "title": "Use Proxies",
+            "type": "boolean",
+            "description": "Whether to use proxies for viewing videos",
+            "default": true
+        },
+        "proxyUrls": {
+            "title": "Custom Proxy URLs",
+            "type": "array",
+            "description": "Optional list of custom proxy URLs (in addition to Apify Proxy)",
+            "editor": "stringList"
+        },
+        "proxyCountry": {
+            "title": "Proxy Country",
+            "type": "string",
+            "description": "Country code for Apify residential proxies (e.g., US, GB, DE)",
+            "editor": "select",
+            "enum": ["", "US", "GB", "DE", "FR", "JP", "CA", "AU", "BR", "IN", "IT", "ES", "NL", "SE", "SG"],
+            "enumTitles": ["Any country", "United States", "United Kingdom", "Germany", "France", "Japan", "Canada", "Australia", "Brazil", "India", "Italy", "Spain", "Netherlands", "Sweden", "Singapore"]
+        },
+        "proxyGroups": {
+            "title": "Proxy Groups",
+            "type": "array",
+            "description": "Apify proxy groups to use",
+            "editor": "stringList",
+            "default": ["RESIDENTIAL"]
+        },
+        "headless": {
+            "title": "Headless Mode",
+            "type": "boolean",
+            "description": "Run browsers in headless mode",
+            "default": false 
+        },
+        "concurrency": {
+            "title": "Concurrency",
+            "type": "integer",
+            "description": "Number of concurrent browser instances",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1 
+        },
+        "concurrencyInterval": {
+            "title": "Concurrency Interval (seconds)",
+            "type": "integer",
+            "description": "Interval in seconds between starting new browser instances",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 5
+        },
+        "timeout": {
+            "title": "Page Navigation Timeout (seconds)",
+            "type": "integer",
+            "description": "Maximum time for page navigation (goto)",
+            "minimum": 30,
+            "maximum": 300,
+            "default": 120
+        },
+        "maxSecondsAds": {
+            "title": "Max Seconds for Ads",
+            "type": "integer",
+            "description": "Maximum seconds to watch an ad before attempting to skip",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 15
+        },
+        "skipAdsAfter": {
+            "title": "Min Ad Watch Time before Skip (seconds, comma-separated if range)",
+            "type": "array",
+            "description": "Attempt to skip ads after this many seconds (if skippable). Use one value or two for a random range.",
+            "editor": "stringList",
+            "default": ["5", "10"]
+        },
+        "autoSkipAds": {
+            "title": "Auto Skip Ads",
+            "type": "boolean",
+            "description": "Automatically skip ads when the skip button becomes available",
+            "default": true
+        },
+        "stopSpawningOnOverload": {
+            "title": "Stop Spawning on Overload",
+            "type": "boolean",
+            "description": "Stop spawning new instances if system (or Apify platform) is at capacity",
+            "default": true
+        },
+        "useAV1": {
+            "title": "Use AV1 Codec (Experimental)",
+            "type": "boolean",
+            "description": "Attempt to use AV1 video codec if available (browser support varies)",
+            "default": false
+        }
+    },
+    "required": ["videoUrls"]
+}
