@@ -4,120 +4,71 @@ const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { to } = require('await-to-js');
 const { v4: uuidv4 } = require('uuid');
+const { URL } = require('url'); // For parsing proxy URL
 
 chromium.use(StealthPlugin());
 
-function getSafeLogger(loggerInstance) {
-    const defaultLogger = {
-        info: console.log,
-        warn: console.warn,
-        error: console.error,
-        debug: console.log,
-        child: () => defaultLogger, // Return self for child if main logger is bad
-    };
-    if (loggerInstance && typeof loggerInstance.info === 'function') {
-        return loggerInstance;
-    }
-    console.error("APIFY LOGGER WAS NOT AVAILABLE, FALLING BACK TO CONSOLE");
-    return defaultLogger;
-}
+// ... (extractVideoId, random, getSafeLogger, handleYouTubeConsent remain the same) ...
+// ... (applyAntiDetectionScripts remains the same) ...
 
-
-function extractVideoId(url) {
-    if (!url || typeof url !== 'string') return null;
-    const patterns = [
-        /[?&]v=([a-zA-Z0-9_-]{11})/,
-        /youtu\.be\/([a-zA-Z0-9_-]{11})/,
-        /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
-        /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/
-    ];
-    for (const pattern of patterns) {
-        const match = url.match(pattern);
-        if (match && match[1]) return match[1];
-    }
-    return null;
-}
-
-function random(min, max) {
-    if (max === undefined) { max = min; min = 0; }
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-async function handleYouTubeConsent(page, logger) {
-    const safeLogger = getSafeLogger(logger);
-    safeLogger.info('Checking for YouTube consent dialog...');
-    const consentButtonSelectors = [
-        'button[aria-label*="Accept all"]', 
-        'button[aria-label*="Accept the use of cookies"]',
-        'button[aria-label*="Agree"]',
-        'div[role="dialog"] button:has-text("Accept all")', 
-        'div[role="dialog"] button:has-text("Agree")',
-        'ytd-button-renderer:has-text("Accept all")', 
-        'tp-yt-paper-button:has-text("ACCEPT ALL")',
-        '#introAgreeButton',
-    ];
-
-    for (const selector of consentButtonSelectors) {
-        try {
-            const button = page.locator(selector).first(); 
-            if (await button.isVisible({ timeout: 7000 })) { 
-                safeLogger.info(`Consent button found: "${selector}". Clicking.`);
-                await button.click({ timeout: 5000, force: true }); 
-                await page.waitForTimeout(1500 + random(500, 1500));
-                safeLogger.info('Consent button clicked.');
-                const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
-                if (!stillVisible) {
-                    safeLogger.info('Consent dialog likely dismissed.');
-                    return true;
-                } else {
-                    safeLogger.warn('Clicked consent button, but a dialog might still be visible.');
-                }
-                return true; 
-            }
-        } catch (e) {
-            safeLogger.debug(`Consent selector "${selector}" not actionable or error: ${e.message.split('\n')[0]}`);
-        }
-    }
-    safeLogger.info('No actionable consent dialog found.');
-    return false;
-}
 
 class YouTubeViewWorker {
-    constructor(job, effectiveInput, proxyUrl, baseLogger) {
+    constructor(job, effectiveInput, proxyUrlString, baseLogger) { // proxyUrlString is the full URL string
         this.job = job;
         this.effectiveInput = effectiveInput;
-        this.proxyUrl = proxyUrl;
+        this.proxyUrlString = proxyUrlString; // Store the string
         this.logger = getSafeLogger(baseLogger).child({ prefix: `Worker-${job.videoId.substring(0, 6)}` });
+        // ... rest of constructor ...
         this.id = uuidv4();
-        this.browser = null;
-        this.context = null;
+        this.browser = null; 
+        this.context = null; 
         this.page = null;
         this.killed = false;
-        this.adWatchState = { /* ... */ };
+        this.adWatchState = {
+            isWatchingAd: false,
+            timeToWatchThisAdBeforeSkip: 0,
+            adPlayedForEnoughTime: false,
+            adStartTime: 0,
+        };
         this.lastReportedVideoTimeSeconds = 0;
     }
 
     async startWorker() {
-        this.logger.info(`Launching browser... Proxy: ${this.proxyUrl ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
-        const userAgentStrings = [ /* ... user agents ... */ ];
+        this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
+        
+        const userAgentStrings = [ /* ... */ ];
         const selectedUserAgent = userAgentStrings[random(userAgentStrings.length - 1)];
+
         const launchOptions = {
             headless: this.effectiveInput.headless,
-            args: [ /* ... args ... */
+            args: [
                 '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
                 '--disable-gpu', '--disable-blink-features=AutomationControlled',
                 `--window-size=${1280 + random(0, 640)},${720 + random(0, 360)}`
             ],
         };
-        if (this.proxyUrl) {
-            launchOptions.proxy = { server: this.proxyUrl };
+
+        if (this.proxyUrlString) {
+            try {
+                const parsedProxy = new URL(this.proxyUrlString);
+                launchOptions.proxy = {
+                    server: `${parsedProxy.protocol}//${parsedProxy.hostname}:${parsedProxy.port}`,
+                    username: parsedProxy.username ? decodeURIComponent(parsedProxy.username) : undefined,
+                    password: parsedProxy.password ? decodeURIComponent(parsedProxy.password) : undefined,
+                };
+                this.logger.info(`Parsed proxy for Playwright: server=${launchOptions.proxy.server}, user=${launchOptions.proxy.username ? '***' : 'N/A'}`);
+            } catch (e) {
+                this.logger.error(`Failed to parse proxy URL string: ${this.proxyUrlString}. Error: ${e.message}`);
+                // Decide: throw error or proceed without proxy? For now, throw.
+                throw new Error(`Invalid proxy URL format: ${this.proxyUrlString}`);
+            }
         }
         
-        this.browser = await chromium.launch(launchOptions); // Use playwright-extra's launch
+        this.browser = await chromium.launch(launchOptions);
         this.logger.info('Browser launched with playwright-extra.');
 
-        this.context = await this.browser.newContext({ // Create context from playwright-extra browser
+        this.context = await this.browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
             locale: ['en-US', 'en-GB', 'hu-HU'][random(2)], 
             timezoneId: ['America/New_York', 'Europe/London', 'Europe/Budapest'][random(2)],
@@ -136,6 +87,8 @@ class YouTubeViewWorker {
             await applyAntiDetectionScripts(this.page, this.logger);
         }
         
+        // ... (rest of startWorker, handleAds, watchVideo, kill methods remain the same) ...
+        // Make sure they use this.logger or pass it correctly.
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
         await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
         this.logger.info('Navigation (domcontentloaded) complete.');
@@ -145,7 +98,7 @@ class YouTubeViewWorker {
         await handleYouTubeConsent(this.page, this.logger);
         await this.page.waitForTimeout(random(2000,4000));
 
-        try { // Get video duration
+        try {
             await this.page.waitForSelector('video.html5-main-video', { timeout: 25000, state: 'attached' });
             this.logger.info('Video element attached.');
             await this.page.evaluate(async () => { 
@@ -172,7 +125,7 @@ class YouTubeViewWorker {
             this.job.video_info.duration = 300;
         }
         
-        try { // Set quality
+        try { 
             if (await this.page.locator('.ytp-settings-button').first().isVisible({timeout: 10000})) {
                 await this.page.click('.ytp-settings-button');
                 await this.page.waitForTimeout(random(600, 1000));
@@ -183,8 +136,8 @@ class YouTubeViewWorker {
                     const qualityOptions = await this.page.locator('.ytp-quality-menu .ytp-menuitem').all(); 
                     if (qualityOptions.length > 0) {
                         let lowestQualityOptionElement = qualityOptions[qualityOptions.length - 1]; 
-                         const text = await lowestQualityOptionElement.textContent();
-                         if (text && text.toLowerCase().includes('auto')) { 
+                         const textContent = await lowestQualityOptionElement.textContent(); // Use textContent
+                         if (textContent && textContent.toLowerCase().includes('auto')) { 
                              if (qualityOptions.length > 1) lowestQualityOptionElement = qualityOptions[qualityOptions.length - 2];
                          }
                         await lowestQualityOptionElement.click();
@@ -203,36 +156,260 @@ class YouTubeViewWorker {
             }
         }
         
-        try { // Play video
-            const playSelectors = [ /* ... */ ];
+        try { 
+            const playSelectors = [
+                'button.ytp-large-play-button[aria-label*="Play"]',
+                'button.ytp-play-button[aria-label*="Play"]',
+                '.ytp-play-button:not([aria-label*="Pause"])', 
+                'div[role="button"][aria-label*="Play"]'
+            ];
             let playClicked = false;
             for(const selector of playSelectors) {
-                // ... (same play logic)
+                const button = this.page.locator(selector).first();
+                if(await button.isVisible({timeout: 2000})) {
+                    await button.click({timeout: 2000, force: true});
+                    this.logger.info(`Clicked play button via selector: ${selector}`);
+                    playClicked = true;
+                    break;
+                }
             }
-            if (!playClicked) { /* ... JS play ... */ }
+            if (!playClicked) {
+                 this.logger.info('No standard play button found, attempting JS play.');
+                 await this.page.evaluate(() => {
+                    const video = document.querySelector('video.html5-main-video');
+                    if (video && video.paused) video.play().catch(e => console.warn("JS play() failed in startWorker:", e.message));
+                });
+            }
         } catch(e) { this.logger.warn(`Error trying to play video: ${e.message.split('\n')[0]}`); }
         await this.page.waitForTimeout(random(2000, 4500));
         return true;
     }
 
-    async handleAds() { /* ... same as before ... */ }
-    async watchVideo() { /* ... same as before ... */ }
-    async kill() { /* ... same as before ... */ }
+    async handleAds() {
+        const adPlayingSelectors = ['.ad-showing', '.ytp-ad-player-overlay-instream-info', '.video-ads .ad-container:not([style*="display: none"])'];
+        const adSkipButtonSelectors = ['.ytp-ad-skip-button-modern', '.ytp-ad-skip-button', '.videoAdUiSkipButton'];
+
+        let adIsCurrentlyPlaying = false;
+        for (const selector of adPlayingSelectors) {
+            if (await this.page.locator(selector).first().isVisible({ timeout: 300 })) {
+                adIsCurrentlyPlaying = true; this.logger.debug(`Ad indicator "${selector}" visible.`); break;
+            }
+        }
+
+        if (!adIsCurrentlyPlaying) {
+            if (this.adWatchState.isWatchingAd) { this.logger.info('Ad seems to have ended.'); this.adWatchState.isWatchingAd = false;}
+            return false;
+        }
+        
+        if (!this.adWatchState.isWatchingAd) {
+            this.adWatchState.isWatchingAd = true; this.adWatchState.adPlayedForEnoughTime = false;
+            const minSkip = this.effectiveInput.skipAdsAfter[0]; const maxSkip = this.effectiveInput.skipAdsAfter[1];
+            this.adWatchState.timeToWatchThisAdBeforeSkip = random(minSkip, maxSkip);
+            this.adWatchState.adStartTime = Date.now();
+            this.logger.info(`Ad detected. Will try skip after ~${this.adWatchState.timeToWatchThisAdBeforeSkip}s.`);
+        }
+        
+        const adElapsedTimeSeconds = (Date.now() - this.adWatchState.adStartTime) / 1000;
+        if (!this.adWatchState.adPlayedForEnoughTime && adElapsedTimeSeconds >= this.adWatchState.timeToWatchThisAdBeforeSkip) {
+            this.adWatchState.adPlayedForEnoughTime = true;
+            this.logger.info(`Ad played for ${adElapsedTimeSeconds.toFixed(1)}s. Checking for skip.`);
+        }
+
+        if (this.effectiveInput.autoSkipAds && this.adWatchState.adPlayedForEnoughTime) {
+            for (const selector of adSkipButtonSelectors) {
+                try {
+                    const skipButton = this.page.locator(selector).first();
+                    if (await skipButton.isVisible({ timeout: 300 }) && await skipButton.isEnabled({ timeout: 300 })) {
+                        this.logger.info(`Clicking ad skip button: "${selector}"`);
+                        await skipButton.click({ timeout: 1000, force: true });
+                        await this.page.waitForTimeout(random(1200, 1800));
+                        this.adWatchState.isWatchingAd = false;
+                        return true; // Ad skipped
+                    }
+                } catch (e) { this.logger.debug(`Skip btn "${selector}" not actionable: ${e.message.split('\n')[0]}`); }
+            }
+            this.logger.debug('Ad played long enough, but no skip button was actionable yet.');
+        } else if (this.effectiveInput.autoSkipAds) {
+            this.logger.debug(`Ad playing (for ${adElapsedTimeSeconds.toFixed(1)}s), target: ~${this.adWatchState.timeToWatchThisAdBeforeSkip}s.`);
+        } else {
+             this.logger.info('autoSkipAds is false. Watching ad.');
+        }
+        return true; 
+    }
+
+    async watchVideo() {
+        if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed.');
+
+        const videoDurationSeconds = this.job.video_info.duration;
+        const targetWatchPercentage = this.job.watch_time;
+        const targetVideoPlayTimeSeconds = Math.max(10, (targetWatchPercentage / 100) * videoDurationSeconds); 
+
+        this.logger.info(`Watch target: ${targetWatchPercentage}% of ${videoDurationSeconds.toFixed(0)}s = ${targetVideoPlayTimeSeconds.toFixed(0)}s. URL: ${this.job.videoUrl}`);
+        
+        const overallWatchStartTime = Date.now();
+        const maxWatchLoopDurationMs = this.effectiveInput.timeout * 1000 * 0.90; 
+        const checkInterval = 5000; 
+
+        while (!this.killed) {
+            const loopIterationStartTime = Date.now();
+            if (this.page.isClosed()) { this.logger.warn('Page closed during watch.'); break; }
+            if (Date.now() - overallWatchStartTime > maxWatchLoopDurationMs) {
+                this.logger.warn('Watch loop max duration exceeded. Ending.');
+                break;
+            }
+
+            const adIsPresent = await this.handleAds();
+            if (adIsPresent) {
+                await Apify.utils.sleep(Math.max(0, checkInterval - (Date.now() - loopIterationStartTime)));
+                continue;
+            }
+            
+            let currentVideoTime = 0, isVideoPaused = true, hasVideoEnded = false;
+            try {
+                const videoState = await this.page.evaluate(() => {
+                    const video = document.querySelector('video.html5-main-video');
+                    if (!video) return { currentTime: 0, paused: true, ended: true, readyState: 0 };
+                    return { currentTime: video.currentTime, paused: video.paused, ended: video.ended, readyState: video.readyState };
+                });
+                currentVideoTime = videoState.currentTime || 0; isVideoPaused = videoState.paused; hasVideoEnded = videoState.ended;
+                if (videoState.readyState < 2 && currentVideoTime < 1 && (Date.now() - overallWatchStartTime > 30000) ) {
+                    this.logger.warn('Video stuck at start (readyState < 2) after 30s.');
+                }
+            } catch (e) { this.logger.warn(`Err getting video state: ${e.message.split('\n')[0]}`); if (e.message.includes('Target closed')) throw e; }
+            
+            this.lastReportedVideoTimeSeconds = currentVideoTime;
+            this.logger.debug(`VidTime: ${currentVideoTime.toFixed(1)}s. Paused: ${isVideoPaused}. Ended: ${hasVideoEnded}`);
+
+            if (isVideoPaused && !hasVideoEnded && currentVideoTime < targetVideoPlayTimeSeconds) {
+                this.logger.info('Video paused, attempting to resume.');
+                try {
+                    await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); if (v && v.paused) v.play().catch(console.error); });
+                    await this.page.locator('button.ytp-play-button[aria-label*="Play"]').first().click({timeout:1000, force:true}).catch(()=>{});
+                } catch (e) { this.logger.warn(`Resume fail: ${e.message.split('\n')[0]}`);}
+            }
+
+            if (hasVideoEnded) { this.logger.info('Video playback ended.'); break; }
+            if (!this.job.video_info.isLive && currentVideoTime >= targetVideoPlayTimeSeconds) {
+                this.logger.info(`Target VOD watch time (${targetVideoPlayTimeSeconds.toFixed(0)}s) reached.`); break;
+            }
+            if (this.job.video_info.isLive && (Date.now() - overallWatchStartTime >= targetVideoPlayTimeSeconds * 1000)) {
+                 this.logger.info(`Live stream target duration (${targetVideoPlayTimeSeconds.toFixed(0)}s) reached.`); break;
+            }
+            await Apify.utils.sleep(Math.max(0, checkInterval - (Date.now() - loopIterationStartTime)));
+        }
+        const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
+        this.logger.info(`Finished watch. Total loop time: ${(actualOverallWatchDurationMs / 1000).toFixed(1)}s. Last video time: ${this.lastReportedVideoTimeSeconds.toFixed(1)}s.`);
+        return { actualOverallWatchDurationMs, lastReportedVideoTimeSeconds: this.lastReportedVideoTimeSeconds, targetVideoPlayTimeSeconds };
+    }
+
+    async kill() {
+        this.killed = true;
+        this.logger.info('Kill signal received. Closing resources.');
+        if (this.page && !this.page.isClosed()) {
+            await this.page.close().catch(e => this.logger.warn(`Error closing page: ${e.message}`));
+        }
+        this.page = null;
+        if (this.context) {
+            await this.context.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
+        }
+        this.context = null;
+        if (this.browser) {
+            await this.browser.close().catch(e => this.logger.warn(`Error closing browser: ${e.message}`));
+        }
+        this.browser = null;
+        this.logger.info('Resources closed.');
+    }
 }
+
 
 async function applyAntiDetectionScripts(page, loggerToUse) {
     const safeLogger = getSafeLogger(loggerToUse);
-    const script = () => { /* ... your original anti-detection script from the prompt ... */ };
+    const script = () => {
+        // WebDriver
+        if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // Languages
+        if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+        // WebGL - Be cautious with this as it can be too aggressive or break sites
+        try {
+            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                // Allow specific canvases to bypass if needed for tests or specific site functionality
+                if (this.canvas && (this.canvas.id === 'webgl-fingerprint-canvas-test' || this.canvas.id === 'some-known-legit-canvas')) {
+                     return originalGetParameter.apply(this, arguments);
+                }
+                // Spoof specific WebGL parameters known to be used in fingerprinting
+                if (parameter === 37445 /* UNMASKED_VENDOR_WEBGL */) return 'Google Inc. (Intel)';
+                if (parameter === 37446 /* UNMASKED_RENDERER_WEBGL */) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
+                // Add more known parameters to spoof if necessary
+                // e.g., if (parameter === WebGLRenderingContext.VERSION) return "WebGL 1.0";
+                return originalGetParameter.apply(this, arguments);
+            };
+        } catch (e) { console.debug('[AntiDetect] Failed WebGL spoof:', e.message); }
+        // Canvas - Noise addition (can slightly degrade image quality)
+        try {
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {
+                if (this.id === 'canvas-fingerprint-element-test') return originalToDataURL.apply(this, arguments); // Bypass for specific test elements
+                const shift = { 
+                    r: Math.floor(Math.random()*4)-2, // Smaller noise values
+                    g: Math.floor(Math.random()*4)-2, 
+                    b: Math.floor(Math.random()*4)-2, 
+                    // a: Math.floor(Math.random()*4)-2 // Avoid alpha modification generally
+                };
+                const ctx = this.getContext('2d');
+                if (ctx && this.width > 0 && this.height > 0) {
+                    try {
+                        const imageData = ctx.getImageData(0,0,this.width,this.height);
+                        for(let i=0; i<imageData.data.length; i+=4){
+                            imageData.data[i]   = Math.min(255,Math.max(0,imageData.data[i]   + shift.r));
+                            imageData.data[i+1] = Math.min(255,Math.max(0,imageData.data[i+1] + shift.g));
+                            imageData.data[i+2] = Math.min(255,Math.max(0,imageData.data[i+2] + shift.b));
+                        }
+                        ctx.putImageData(imageData,0,0);
+                    } catch(e) { console.debug('[AntiDetect] Failed Canvas noise application:', e.message); }
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+        } catch (e) { console.debug('[AntiDetect] Failed Canvas dataURL spoof:', e.message); }
+        // Permissions API
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            const originalPermissionsQuery = navigator.permissions.query;
+            navigator.permissions.query = (parameters) => ( 
+                parameters.name === 'notifications' ? 
+                Promise.resolve({ state: Notification.permission || 'prompt' }) : 
+                originalPermissionsQuery.call(navigator.permissions, parameters) 
+            );
+        }
+        // Screen properties
+        if (window.screen) {
+            try {
+                Object.defineProperty(window.screen, 'availWidth', { get: () => 1920, configurable: true, writable: false });
+                Object.defineProperty(window.screen, 'availHeight', { get: () => 1040, configurable: true, writable: false });
+                Object.defineProperty(window.screen, 'width', { get: () => 1920, configurable: true, writable: false });
+                Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true, writable: false });
+                Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true, writable: false });
+                Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true, writable: false });
+            } catch (e) { console.debug('[AntiDetect] Failed screen spoof:', e.message); }
+        }
+        // Timezone (Example: New York, UTC-5 during standard time)
+        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { console.debug('[AntiDetect] Failed timezone spoof:', e.message); }
+        // Plugins & MimeTypes (report as empty, or a very minimal common set)
+        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetect] Failed plugin spoof:', e.message); }
+        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetect] Failed mimeType spoof:', e.message); }
+    };
+
     try {
         await page.addInitScript(script);
-        safeLogger.info('Custom anti-detection script applied via addInitScript.');
+        safeLogger.info('Custom anti-detection script added via addInitScript.');
     } catch (e) {
         safeLogger.error(`Failed to add init script: ${e.message}`);
     }
 }
 
+
 async function actorMainLogic() {
-    const actorLog = getSafeLogger(log); // Use safe logger from the start
+    const actorLog = getSafeLogger(log);
     await Actor.init(); 
     actorLog.info('Starting YouTube View Bot (Custom Playwright with Stealth).');
 
@@ -290,14 +467,14 @@ async function actorMainLogic() {
         let proxyInfoForLog = 'None';
 
         if (actorProxyConfiguration) {
-            const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`; // CORRECTED
+            const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`;
             proxyUrlToUse = actorProxyConfiguration.newUrl(sessionId);
             proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
         } else if (effectiveInput.useProxies) {
              jobLogger.warn(`Proxy requested but not configured.`);
         }
 
-        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlToUse, jobLogger); // Pass jobLogger
+        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlToUse, jobLogger); 
         let jobResultData = { 
             jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId, 
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer 
@@ -354,11 +531,12 @@ async function actorMainLogic() {
     await Actor.exit();
 }
 
+
 Actor.main(async () => {
     try {
         await actorMainLogic();
     } catch (error) {
-        const loggerToUse = getSafeLogger(log); // Ensure logger is safe here too
+        const loggerToUse = getSafeLogger(log); 
         loggerToUse.error('CRITICAL UNHANDLED ERROR IN Actor.main:', { message: error.message, stack: error.stack });
         
         if (Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.isAtHome()) {
