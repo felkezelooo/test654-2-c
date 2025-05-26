@@ -7,15 +7,12 @@
             "title": "Video URLs",
             "type": "array",
             "description": "List of YouTube or Rumble video URLs to process",
-            "items": {
-                "type": "string"
-            },
             "editor": "stringList"
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",
             "type": "integer",
-            "description": "Percentage of video to watch (1-100). Actual watch time depends on the selfbot API's ability to determine video duration or a fallback.",
+            "description": "Percentage of video to watch (1-100)",
             "minimum": 1,
             "maximum": 100,
             "default": 80
@@ -23,71 +20,62 @@
         "useProxies": {
             "title": "Use Apify Proxies",
             "type": "boolean",
-            "description": "Whether to use Apify proxy service. The selfbot APIs will be configured with the proxy.",
+            "description": "Whether to use Apify proxy service",
             "default": true
         },
         "proxyGroups": {
             "title": "Proxy Groups",
             "type": "array",
-            "description": "Proxy groups to use if Apify Proxies are enabled.",
-            "items": {
-                "type": "string",
-                "enum": ["RESIDENTIAL", "DATACENTER", "BUYPROXIES911", "STATICUS"]
-            },
+            "description": "Proxy groups to use (RESIDENTIAL or DATACENTER)",
+            "editor": "select",
             "default": ["RESIDENTIAL"]
         },
         "proxyCountry": {
             "title": "Proxy Country",
             "type": "string",
-            "description": "Country code for proxies (e.g., 'US', 'GB'). Empty or 'ANY' for any.",
+            "description": "Country code for proxies (e.g., 'US', 'GB')",
             "default": "US"
         },
         "headless": {
             "title": "Headless Mode",
             "type": "boolean",
-            "description": "Run browser in headless mode (as supported by selfbot APIs)",
+            "description": "Run browser in headless mode",
             "default": true
         },
         "autoSkipAds": {
             "title": "Auto Skip Ads",
             "type": "boolean",
-            "description": "Automatically skip advertisements (relies on selfbot API capability)",
+            "description": "Automatically skip advertisements",
             "default": true
         },
         "skipAdsAfter": {
-            "title": "Skip Ads After (seconds range)",
+            "title": "Skip Ads After (seconds)",
             "type": "array",
-            "description": "Range of seconds [min, max] to wait before skipping video ads if autoSkipAds is true. Example: [5, 10]",
-            "items": {
-                "type": "integer"
-            },
+            "description": "Range of seconds to wait before skipping ads [min, max]",
             "default": [5, 10]
         },
         "useAV1": {
             "title": "Use AV1 Codec",
             "type": "boolean",
-            "description": "Attempt to use AV1 video codec if available (selfbot API option)",
+            "description": "Use AV1 video codec if available",
             "default": false
         },
         "timeout": {
-            "title": "Operation Timeout (seconds)",
+            "title": "Timeout (seconds)",
             "type": "integer",
-            "description": "General timeout for operations within the selfbot APIs (e.g., page load, bot launch)",
+            "description": "Timeout for operations in seconds",
             "default": 120
         },
         "concurrencyInterval": {
             "title": "Interval Between Videos (seconds)",
             "type": "integer",
-            "description": "Seconds to wait between processing each video if multiple URLs are provided (sequential processing in the new main.js)",
+            "description": "Seconds to wait between processing videos",
             "default": 1
         },
         "searchKeywordsForEachVideo": {
-            "title": "Search Keywords (for future 'search' type)",
+            "title": "Search Keywords",
             "type": "array",
-            "description": "Keywords to use if a 'search' watchType is implemented with selfbot APIs. Currently, the provided main.js primarily uses 'direct' with selfbot APIs.",
-            "items": {
-                "type": "string"
-            },
+            "description": "Keywords to use when searching for videos",
             "editor": "stringList"
         }
     },
