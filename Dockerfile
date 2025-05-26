@@ -5,9 +5,8 @@ FROM apify/actor-node-playwright:20
 COPY package*.json ./
 
 # Install NPM packages
-# Using --force to try and bypass the platform incompatibility of browser-with-fingerprints.
-# This is risky and may lead to runtime errors if that package is essential.
-RUN npm install --omit=dev --force
+# This will install dependencies specified in your package.json
+RUN npm install --omit=dev
 
 # Copy the rest of the actor's source code
 COPY . ./
