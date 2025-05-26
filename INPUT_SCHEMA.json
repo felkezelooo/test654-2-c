@@ -7,7 +7,10 @@
             "title": "Video URLs",
             "type": "array",
             "description": "List of YouTube or Rumble video URLs to process",
-            "editor": "stringList"
+            "editor": "stringList",
+            "items": {
+                "type": "string"
+            }
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",
@@ -26,14 +29,26 @@
         "proxyGroups": {
             "title": "Proxy Groups",
             "type": "array",
-            "description": "Proxy groups to use (RESIDENTIAL or DATACENTER)",
-            "editor": "select",
-            "default": ["RESIDENTIAL"]
+            "description": "Proxy groups to use. Select one or more.",
+            "default": ["RESIDENTIAL"],
+            "items": {
+                "type": "string",
+                "enum": [
+                    "RESIDENTIAL",
+                    "DATACENTER",
+                    "BUYPROXIES911",
+                    "STATICUS"
+                ]
+            },
+            "editor": "select", // For multi-select from enum items
+            "editor Zeyos": { // Example of how some UIs might handle multi-select spec
+                "mode": "multiple"
+            }
         },
         "proxyCountry": {
             "title": "Proxy Country",
             "type": "string",
-            "description": "Country code for proxies (e.g., 'US', 'GB')",
+            "description": "Country code for proxies (e.g., 'US', 'GB', or 'ANY' for random)",
             "default": "US"
         },
         "headless": {
@@ -49,10 +64,14 @@
             "default": true
         },
         "skipAdsAfter": {
-            "title": "Skip Ads After (seconds)",
+            "title": "Skip Ads After (seconds range)",
             "type": "array",
-            "description": "Range of seconds to wait before skipping ads [min, max]",
-            "default": [5, 10]
+            "description": "Range of seconds to wait before skipping ads [min, max]. E.g., [5, 10]",
+            "default": [5, 10],
+            "items": {
+                "type": "integer"
+            },
+            "editor": "json" // Or stringList if you prefer users to type numbers
         },
         "useAV1": {
             "title": "Use AV1 Codec",
@@ -75,8 +94,11 @@
         "searchKeywordsForEachVideo": {
             "title": "Search Keywords",
             "type": "array",
-            "description": "Keywords to use when searching for videos",
-            "editor": "stringList"
+            "description": "Keywords to use when searching for videos (if search logic is implemented in main.js)",
+            "editor": "stringList",
+            "items": {
+                "type": "string"
+            }
         }
     },
     "required": ["videoUrls"]
