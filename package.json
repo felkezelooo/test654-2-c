@@ -1,24 +1,18 @@
 {
-  "name": "youtube-rumble-view-bot-apify-test1111",
+  "name": "youtube-view-bot-apify-referer",
   "version": "1.0.0",
-  "description": "YouTube and Rumble view bot using test1111's fingerprinting approach on Apify",
-  "main": "main.js",
+  "description": "Apify actor for YouTube views with custom referers and proxy support.",
   "type": "commonjs",
+  "dependencies": {
+    "apify": "^3.4.0",
+    "youtube-selfbot-api": "^4.4.3",
+    "await-to-js": "^3.0.0",
+    "uuid": "^9.0.0"
+  },
   "scripts": {
     "start": "node main.js",
     "apify:run": "apify run"
   },
-  "dependencies": {
-    "apify": "^3.4.2",
-    "playwright": "^1.40.0",
-    "youtube-selfbot-api": "^4.4.3",
-    "rumble-selfbot-api": "^1.0.6",
-    "playwright-anti-fingerprinter": "^1.1.3",
-    "@distube/ytdl-core": "^4.14.4",
-    "await-to-js": "^3.0.0",
-    "uuid": "^9.0.0"
-  },
-  "keywords": ["youtube", "rumble", "view-bot", "apify", "fingerprinting"],
-  "author": "YourName",
+  "author": "Your Name",
   "license": "UNLICENSED"
 }
