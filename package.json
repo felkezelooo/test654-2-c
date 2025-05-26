@@ -1,11 +1,13 @@
 {
-  "name": "youtube-view-bot-apify-referer",
+  "name": "youtube-view-bot-apify-custom",
   "version": "1.0.0",
-  "description": "Apify actor for YouTube views with custom referers and proxy support.",
+  "description": "Apify actor for YouTube views with custom referers, proxies, and stealth.",
   "type": "commonjs",
   "dependencies": {
     "apify": "^3.4.2",
-    "youtube-selfbot-api": "^4.4.3",
+    "playwright-core": "^1.46.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
     "await-to-js": "^3.0.0",
     "uuid": "^9.0.1"
   },
