@@ -8,7 +8,6 @@
             "type": "array",
             "description": "List of YouTube or Rumble video URLs to process",
             "editor": "stringList"
-            // "items" removed because editor: "stringList" implies string items for Apify
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",
@@ -91,7 +90,6 @@
             "type": "array",
             "description": "Keywords to use when searching for videos (if search logic is implemented in main.js)",
             "editor": "stringList"
-            // "items" removed because editor: "stringList" implies string items for Apify
         }
     },
     "required": ["videoUrls"]
