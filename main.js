@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor, log } = Apify;
+const { Actor, log, ProxyConfiguration } = Apify; // Destructure ProxyConfiguration as well
 // const playwright = require('playwright-core'); // Not needed directly if using playwright-extra's chromium
 const { chromium } = require('playwright-extra'); // Import from playwright-extra
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -74,7 +74,8 @@ class YouTubeViewWorker {
         this.proxyUrl = proxyUrl;
         this.logger = baseLogger.child({ prefix: `Worker-${job.videoId.substring(0, 6)}` });
         this.id = uuidv4();
-        this.browserContext = null; // Changed from this.browser and this.context
+        this.browser = null; // Will hold the main browser instance from playwright-extra
+        this.context = null; // Will hold the browser context
         this.page = null;
         this.killed = false;
         this.adWatchState = {
@@ -92,43 +93,53 @@ class YouTubeViewWorker {
         const userAgentStrings = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0' // Firefox UA
         ];
         const selectedUserAgent = userAgentStrings[random(userAgentStrings.length - 1)];
 
         const launchOptions = {
             headless: this.effectiveInput.headless,
-            args: [
+            args: [ /* ... standard args from previous working version ... */
                 '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
                 '--disable-gpu', '--disable-blink-features=AutomationControlled',
-                `--window-size=${1280 + random(0, 640)},${720 + random(0, 360)}`
+                `--window-size=${1280 + random(0, 640)},${720 + random(0, 360)}` // Random window size
             ],
-            bypassCSP: true, // Context options can sometimes be passed at launch with playwright-extra
-            ignoreHTTPSErrors: true,
-            locale: ['en-US', 'en-GB', 'hu-HU'][random(2)],
-            timezoneId: ['America/New_York', 'Europe/London', 'Europe/Budapest'][random(2)],
-            userAgent: selectedUserAgent,
         };
 
         if (this.proxyUrl) {
             launchOptions.proxy = { server: this.proxyUrl };
         }
         
-        // playwright-extra's chromium.launch gives a Browser instance
-        const browser = await chromium.launch(launchOptions);
-        this.browserContext = await browser.newContext(); // Create a new context from the browser
-        
-        this.logger.info('Browser launched and context created with playwright-extra.');
+        // Launch browser using playwright-extra's chromium
+        this.browser = await chromium.launch(launchOptions);
+        this.logger.info('Browser launched with playwright-extra.');
 
+        // Create a new context from this browser
+        this.context = await this.browser.newContext({
+            bypassCSP: true, 
+            ignoreHTTPSErrors: true,
+            locale: ['en-US', 'en-GB', 'hu-HU'][random(2)], 
+            timezoneId: ['America/New_York', 'Europe/London', 'Europe/Budapest'][random(2)],
+            javaScriptEnabled: true, 
+            userAgent: selectedUserAgent,
+            // Viewport is set by window-size arg, but can be overridden here if needed
+        });
+        this.logger.info('Browser context created.');
 
         if (this.job.referer) {
             this.logger.info(`Setting referer: ${this.job.referer}`);
-            await this.browserContext.setExtraHTTPHeaders({ 'Referer': this.job.referer });
+            await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer });
         }
 
-        this.page = await this.browserContext.newPage();
+        this.page = await this.context.newPage();
         this.logger.info('New page created.');
+        
+        // Apply custom anti-detection scripts to the page/context
+        // Using a simplified version of your original applyAntiDetectionScripts
+        if (this.effectiveInput.customAntiDetection) { // Add a new input option if you want to toggle this
+            await applyAntiDetectionScripts(this.page, this.logger); // Pass page directly
+        }
         
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
         await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
@@ -227,8 +238,6 @@ class YouTubeViewWorker {
     }
 
     async handleAds() {
-        // ... (Keep the existing handleAds logic from the previous full main.js)
-        // This function uses this.page.locator and this.logger, which are correctly set up.
         const adPlayingSelectors = ['.ad-showing', '.ytp-ad-player-overlay-instream-info', '.video-ads .ad-container:not([style*="display: none"])'];
         const adSkipButtonSelectors = ['.ytp-ad-skip-button-modern', '.ytp-ad-skip-button', '.videoAdUiSkipButton'];
 
@@ -281,8 +290,6 @@ class YouTubeViewWorker {
     }
 
     async watchVideo() {
-        // ... (Keep the existing watchVideo logic from the previous full main.js)
-        // This function uses this.page.evaluate, this.logger, this.job, etc.
         if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed.');
 
         const videoDurationSeconds = this.job.video_info.duration;
@@ -349,21 +356,90 @@ class YouTubeViewWorker {
 
     async kill() {
         this.killed = true;
-        this.logger.info('Kill signal received. Closing browser context and browser.');
-        // Close page first
+        this.logger.info('Kill signal received. Closing resources.');
         if (this.page && !this.page.isClosed()) {
             await this.page.close().catch(e => this.logger.warn(`Error closing page: ${e.message}`));
-            this.page = null;
         }
-        // Then close context
-        if (this.browserContext) { // Renamed from this.context to this.browserContext for clarity
-            await this.browserContext.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
-            this.browserContext = null;
+        this.page = null;
+        if (this.context) {
+            await this.context.close().catch(e => this.logger.warn(`Error closing context: ${e.message}`));
         }
-        // Browser instance from chromium.launch() doesn't exist in this flow if we use launchPersistentContext and treat it as the context.
-        // If you switched back to chromium.launch() and then browser.newContext(), you'd close browser here.
+        this.context = null;
+        if (this.browser) { // This browser instance is from chromium.launch()
+            await this.browser.close().catch(e => this.logger.warn(`Error closing browser: ${e.message}`));
+        }
+        this.browser = null;
+        this.logger.info('Resources closed.');
     }
 }
+
+// Your previous anti-detection script
+async function applyAntiDetectionScripts(page, loggerToUse = log) {
+    const script = () => {
+        // WebDriver
+        if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // Languages
+        if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+        // WebGL
+        try {
+            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                if (this.canvas && this.canvas.id === 'webgl-fingerprint-canvas') return originalGetParameter.apply(this, arguments); // Allow specific test canvases
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
+                return originalGetParameter.apply(this, arguments);
+            };
+        } catch (e) { console.debug('[AntiDetect] Failed WebGL spoof:', e.message); }
+        // Canvas
+        try {
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {
+                if (this.id === 'canvas-fingerprint-element') return originalToDataURL.apply(this, arguments);
+                const shift = { r: Math.floor(Math.random()*10)-5, g: Math.floor(Math.random()*10)-5, b: Math.floor(Math.random()*10)-5, a: Math.floor(Math.random()*10)-5 };
+                const ctx = this.getContext('2d');
+                if (ctx && this.width > 0 && this.height > 0) {
+                    try {
+                        const imageData = ctx.getImageData(0,0,this.width,this.height);
+                        for(let i=0; i<imageData.data.length; i+=4){
+                            imageData.data[i] = Math.min(255,Math.max(0,imageData.data[i]+shift.r));
+                            imageData.data[i+1] = Math.min(255,Math.max(0,imageData.data[i+1]+shift.g));
+                            imageData.data[i+2] = Math.min(255,Math.max(0,imageData.data[i+2]+shift.b));
+                            // imageData.data[i+3] = Math.min(255,Math.max(0,imageData.data[i+3]+shift.a)); // Modifying alpha can make things transparent
+                        }
+                        ctx.putImageData(imageData,0,0);
+                    } catch(e) { console.debug('[AntiDetect] Failed Canvas noise:', e.message); }
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+        } catch (e) { console.debug('[AntiDetect] Failed Canvas spoof:', e.message); }
+        // Permissions
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            const originalPermissionsQuery = navigator.permissions.query;
+            navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
+        }
+        // Screen properties (fixed values for consistency, can be randomized if needed)
+        if (window.screen) {
+            try {
+                Object.defineProperty(window.screen, 'availWidth', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'availHeight', { get: () => 1040, configurable: true }); // Common for 1080p with taskbar
+                Object.defineProperty(window.screen, 'width', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true });
+                Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true });
+                Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
+            } catch (e) { console.debug('[AntiDetect] Failed screen spoof:', e.message); }
+        }
+        // Timezone (e.g., UTC-5, New York)
+        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { console.debug('[AntiDetect] Failed timezone spoof:', e.message); }
+        // Plugins & MimeTypes (report as empty)
+        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetect] Failed plugin spoof:', e.message); }
+        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetect] Failed mimeType spoof:', e.message); }
+    };
+
+    await page.addInitScript(script).catch(e => loggerToUse.error(`Failed to add init script: ${e.message}`));
+    loggerToUse.info('Custom anti-detection script applied.');
+}
+
 
 async function actorMainLogic() {
     await Actor.init(); 
@@ -377,6 +453,7 @@ async function actorMainLogic() {
         useProxies: true, proxyCountry: 'US', proxyGroups: ['RESIDENTIAL'],
         headless: true, autoSkipAds: true, skipAdsAfterMinSeconds: 5, skipAdsAfterMaxSeconds: 12,
         timeout: 120, concurrency: 1, concurrencyInterval: 5,
+        customAntiDetection: true, // Default to using your script
     };
     const effectiveInput = { ...defaultInput, ...input };
     effectiveInput.skipAdsAfter = [
@@ -394,7 +471,7 @@ async function actorMainLogic() {
         const proxyOpts = { groups: effectiveInput.proxyGroups || ['RESIDENTIAL'] };
         if (effectiveInput.proxyCountry && effectiveInput.proxyCountry !== "ANY") proxyOpts.countryCode = effectiveInput.proxyCountry;
         try {
-            actorProxyConfiguration = await Actor.createProxyConfiguration(proxyOpts);
+            actorProxyConfiguration = await ProxyConfiguration.create(proxyOpts); // Use destructured ProxyConfiguration
             log.info(`Apify Proxy: Country=${proxyOpts.countryCode || 'Any'}, Groups=${(proxyOpts.groups).join(', ')}`);
         } catch (e) { log.error(`Failed Apify Proxy config: ${e.message}.`); actorProxyConfiguration = null; }
     }
@@ -421,7 +498,7 @@ async function actorMainLogic() {
         let proxyInfoForLog = 'None';
 
         if (actorProxyConfiguration) {
-            const sessionId = `session_${job.id.substring(0, 8).replace(/-/g, '')}`; // Corrected session ID
+            const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`; // Corrected and slightly longer session ID
             proxyUrlToUse = actorProxyConfiguration.newUrl(sessionId);
             proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
         } else if (effectiveInput.useProxies) {
@@ -475,7 +552,7 @@ async function actorMainLogic() {
     }
     await Promise.all(runPromises.map(p => p.catch(e => { 
         log.error(`Error caught by Promise.all on worker promise: ${e.message}`);
-        return e; // Prevents Promise.all from rejecting early
+        return e; 
     })));
 
     overallResults.endTime = new Date().toISOString();
