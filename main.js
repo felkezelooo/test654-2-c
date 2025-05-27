@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor, log, ProxyConfiguration } = Apify; // Keep ProxyConfiguration if used for createProxyConfiguration directly
+const { Actor, log, ProxyConfiguration } = Apify;
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { to } = require('await-to-js');
@@ -13,6 +13,11 @@ try {
 } catch (e) {
     console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
     throw e; 
+}
+
+// Custom sleep function
+async function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function getSafeLogger(loggerInstance) {
@@ -77,14 +82,10 @@ async function handleYouTubeConsent(page, logger) {
     const safeLogger = getSafeLogger(logger);
     safeLogger.info('Checking for YouTube consent dialog...');
     const consentButtonSelectors = [
-        'button[aria-label*="Accept all"]', 
-        'button[aria-label*="Accept the use of cookies"]',
-        'button[aria-label*="Agree to all"]', 
-        'button[aria-label*="Agree"]',
-        'div[role="dialog"] button:has-text("Accept all")', 
-        'div[role="dialog"] button:has-text("Agree")',
-        'ytd-button-renderer:has-text("Accept all")', 
-        'tp-yt-paper-button:has-text("ACCEPT ALL")',
+        'button[aria-label*="Accept all"]', 'button[aria-label*="Accept the use of cookies"]',
+        'button[aria-label*="Agree to all"]', 'button[aria-label*="Agree"]',
+        'div[role="dialog"] button:has-text("Accept all")', 'div[role="dialog"] button:has-text("Agree")',
+        'ytd-button-renderer:has-text("Accept all")', 'tp-yt-paper-button:has-text("ACCEPT ALL")',
         '#introAgreeButton',
     ];
     for (const selector of consentButtonSelectors) {
@@ -93,7 +94,7 @@ async function handleYouTubeConsent(page, logger) {
             if (await button.isVisible({ timeout: 7000 })) { 
                 safeLogger.info(`Consent button found: "${selector}". Clicking.`);
                 await button.click({ timeout: 5000, force: true }); 
-                await page.waitForTimeout(1500 + random(500, 1500));
+                await page.waitForTimeout(1500 + random(500, 1500)); // Using page's waitForTimeout
                 safeLogger.info('Consent button clicked.');
                 const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
                 if (!stillVisible) { safeLogger.info('Consent dialog likely dismissed.'); return true; }
@@ -200,7 +201,7 @@ async function getVideoDuration(page, loggerToUse) {
         } catch (e) {
             safeLogger.debug(`Attempt ${i+1} to get duration failed: ${e.message.split('\n')[0]}`);
         }
-        await Apify.utils.sleep(1000); // CORRECTED to Apify.utils.sleep
+        await sleep(1000); // USE CUSTOM SLEEP
     }
     safeLogger.warning('Could not determine video duration after 15 seconds.');
     return null; 
@@ -223,16 +224,10 @@ async function clickIfExists(page, selector, timeout = 3000, loggerToUse) {
 
 class YouTubeViewWorker {
     constructor(job, effectiveInput, proxyUrlString, baseLogger) {
-        this.job = job;
-        this.effectiveInput = effectiveInput;
-        this.proxyUrlString = proxyUrlString;
+        this.job = job; this.effectiveInput = effectiveInput; this.proxyUrlString = proxyUrlString;
         this.logger = getSafeLogger(baseLogger).child({ prefix: `Worker-${job.videoId.substring(0, 6)}: ` });
-        this.id = uuidv4();
-        this.browser = null; 
-        this.context = null; 
-        this.page = null;
-        this.killed = false;
-        this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
+        this.id = uuidv4(); this.browser = null; this.context = null; this.page = null; this.killed = false;
+        this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0, };
         this.lastReportedVideoTimeSeconds = 0;
     }
 
@@ -383,7 +378,7 @@ class YouTubeViewWorker {
                  else this.logger.info('Max ad watch time reached, but cannot skip yet.');
                  break; 
             }
-            await Apify.utils.sleep(adCheckInterval);
+            await sleep(adCheckInterval); // USE CUSTOM SLEEP
         }
         if (adWatchLoop >= maxAdLoopIterations) this.logger.warn('Max ad loop iterations reached in handleAds.');
         this.logger.info('Ad handling logic finished for this check.');
@@ -419,7 +414,7 @@ class YouTubeViewWorker {
             await this.page.waitForTimeout(500);
             const finalCheckPaused = await this.page.evaluate(() => document.querySelector('video')?.paused).catch(()=>true);
             if (!finalCheckPaused) { logFn('Video started playing after general video click.'); return true; }
-            if (attempt < 2) await Apify.utils.sleep(1000);
+            if (attempt < 2) await sleep(1000); // USE CUSTOM SLEEP
         }
         logFn('Failed to ensure video is playing after multiple attempts.', 'warn');
         return false;
@@ -456,7 +451,7 @@ class YouTubeViewWorker {
                 });
                 if (!videoState) {
                     this.logger.warn('Video element not found in evaluate during watch loop. Trying to recover.');
-                    await Apify.utils.sleep(2000); // CORRECTED
+                    await sleep(2000); // USE CUSTOM SLEEP
                     if (!(await this.page.locator('video.html5-main-video').count() > 0)) {
                         throw new Error('Video element disappeared definitively during watch loop.');
                     }
@@ -491,7 +486,7 @@ class YouTubeViewWorker {
                  await this.page.mouse.move(random(100,500),random(100,300),{steps:random(3,7)}).catch(()=>{}); 
                  this.logger.debug('Simulated mouse move.');
             }
-            await Apify.utils.sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime))); // CORRECTED
+            await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime))); // USE CUSTOM SLEEP
         }
         const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
         this.logger.info(`Finished watch. Total loop: ${(actualOverallWatchDurationMs / 1000).toFixed(1)}s. Last video time: ${currentActualVideoTime.toFixed(1)}s.`);
@@ -565,6 +560,12 @@ async function actorMainLogic() {
     }
 
     const jobs = [];
+    const userAgentStrings = [ // Make this available for search browser context
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+    ];
+
     for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
         const url = effectiveInput.videoUrls[i];
         const videoId = extractVideoIdFromUrl(url, actorLog); 
@@ -609,7 +610,7 @@ async function actorMainLogic() {
             } else if (actorProxyConfiguration) {
                 const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`; 
                 try {
-                    proxyUrlString = await actorProxyConfiguration.newUrl(sessionId); // AWAITED
+                    proxyUrlString = await actorProxyConfiguration.newUrl(sessionId); 
                     proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
                      jobLogger.info(`Using Apify proxy: ${proxyInfoForLog}`);
                 } catch (proxyError) {
@@ -619,7 +620,6 @@ async function actorMainLogic() {
             } else { jobLogger.warn(`Proxies enabled but no configuration found.`); }
         }
 
-        // --- Search Logic ---
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             jobLogger.info(`Attempting YouTube search for: "${job.searchKeywords.join(', ')}" to find ID: ${job.videoId}`);
             let searchBrowser = null, searchContext = null, searchPage = null;
@@ -631,7 +631,7 @@ async function actorMainLogic() {
                 } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
             }
             try {
-                const searchUserAgent = userAgentStrings[random(userAgentStrings.length-1)]; // Defined globally earlier
+                const searchUserAgent = userAgentStrings[random(userAgentStrings.length-1)];
                 searchBrowser = await chromium.launch(searchLaunchOptions);
                 searchContext = await searchBrowser.newContext({ userAgent: searchUserAgent }); 
                 searchPage = await searchContext.newPage();
@@ -665,7 +665,6 @@ async function actorMainLogic() {
                 if (searchBrowser) await searchBrowser.close().catch(e => jobLogger.debug(`Search browser close error: ${e.message}`));
             }
         }
-        // --- End Search Logic ---
 
         const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlString, jobLogger); 
         let jobResultData = { 
@@ -710,7 +709,7 @@ async function actorMainLogic() {
         jobCounter++;
         if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
             actorLog.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}).`);
-            await Apify.utils.sleep(effectiveInput.concurrencyInterval * 1000);
+            await sleep(effectiveInput.concurrencyInterval * 1000); // USE CUSTOM SLEEP
         }
     }
     await Promise.all(runPromises.map(p => p.catch(e => { 
