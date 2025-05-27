@@ -267,12 +267,13 @@ class YouTubeViewWorker {
         this.browser = null; this.context = null; this.page = null;
         this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
         this.lastReportedVideoTimeSeconds = 0;
+        this.lastLoggedVideoTime = 0; // For conditional video playing log
         
         this.logger.info('Worker instance constructed.');
     }
 
     createFallbackLogger(prefix) {
-        const self = this; // To call createFallbackLogger recursively for child's child
+        const self = this;
         return {
             prefix: prefix,
             info: (m, d) => console.log(`INFO ${this.prefix}${m}`, d || ''),
@@ -412,11 +413,12 @@ class YouTubeViewWorker {
     }
 
     async handleAds() {
-        // this.logger.info('Checking for ads...'); // Reduced frequency by calling this before handleAds in watchVideo
+        // this.logger.info('Checking for ads...'); // This will be called conditionally from watchVideo
         let adWasPlayingThisCheckCycle = false;
         const adPlayingInitially = await this.page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
 
         if (!adPlayingInitially) {
+            // this.logger.debug('No ad detected at the start of this ad check cycle.'); // Still a bit noisy
             return false;
         }
 
@@ -432,12 +434,12 @@ class YouTubeViewWorker {
 
             const isAdStillPlaying = await this.page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
             if (!isAdStillPlaying) {
-                this.logger.info('Ad finished or disappeared.');
+                this.logger.info('Ad finished or disappeared during handling loop.');
                 break;
             }
 
             const canSkip = await this.page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button').count() > 0;
-            const minSkipTimeMs = (this.effectiveInput.skipAdsAfter[0] || 0) * 1000; // Ensure it's a number, default to 0
+            const minSkipTimeMs = (this.effectiveInput.skipAdsAfter[0] || 0) * 1000;
 
             if (this.effectiveInput.autoSkipAds && canSkip) {
                 this.logger.info('AutoSkipAds: Attempting to skip ad.');
@@ -454,8 +456,8 @@ class YouTubeViewWorker {
             }
             await sleep(adSkipCheckInterval);
         }
-        if (Date.now() - adLoopStartTime >= maxAdWatchDuration) {
-             (this.logger.warn || this.logger.warning).call(this.logger, 'Max ad watch duration reached in ad handling loop.');
+        if (Date.now() - adLoopStartTime >= maxAdWatchDuration && await this.page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0) {
+             (this.logger.warn || this.logger.warning).call(this.logger, 'Max ad watch duration reached in ad handling loop, ad might still be playing.');
         }
         this.logger.info('Exiting ad handling loop.');
         return adWasPlayingThisCheckCycle;
@@ -564,10 +566,11 @@ class YouTubeViewWorker {
         let lastKnownGoodVideoTime = 0;
         this.maxTimeReachedThisView = 0;
         let currentActualVideoTime = 0;
+        this.lastLoggedVideoTime = -1; // Initialize for conditional logging
 
         let adCheckCooldownMs = 0;
-        const AD_CHECK_INTERVAL_WHEN_NO_AD = 5000;
-        const AD_CHECK_INTERVAL_DURING_AD = 1500;
+        const AD_CHECK_INTERVAL_WHEN_NO_AD = 5000; // Check ads every 5s if none found
+        const AD_CHECK_INTERVAL_DURING_AD = 1500; // Check ads more frequently if one is playing
 
 
         while (!this.killed) {
@@ -584,11 +587,11 @@ class YouTubeViewWorker {
                 const adPlayed = await this.handleAds();
                 if (adPlayed) {
                     adCheckCooldownMs = Date.now() + AD_CHECK_INTERVAL_DURING_AD;
-                    lastProgressTimestamp = Date.now();
+                    lastProgressTimestamp = Date.now(); // Reset video stall timers
                     lastKnownGoodVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(() => lastKnownGoodVideoTime);
                     consecutiveStallChecks = 0;
-                    this.logger.info('Ad cycle finished/handled, resetting stall detection and allowing video to buffer/resume.');
-                    await sleep(1000 + random(500));
+                    this.logger.info('Ad cycle handled, resetting stall detection and allowing video to buffer/resume.');
+                    await sleep(1000 + random(500)); // Give a moment for main video to resume
                 } else {
                     adCheckCooldownMs = Date.now() + AD_CHECK_INTERVAL_WHEN_NO_AD;
                 }
@@ -618,14 +621,19 @@ class YouTubeViewWorker {
                 if (currentActualVideoTime > this.maxTimeReachedThisView) {
                     this.maxTimeReachedThisView = currentActualVideoTime;
                 }
-                // this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}`);
                 
-                // More explicit video state logging
                 if (!videoState.p && videoState.rs >= 3 && !videoState.e) {
-                    this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns}`);
+                    if (currentActualVideoTime > this.lastLoggedVideoTime + 4.5 || this.lastLoggedVideoTime < 0) { 
+                        this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns}`);
+                        this.lastLoggedVideoTime = currentActualVideoTime;
+                    } else {
+                        this.logger.debug(`Video playing at ${currentActualVideoTime.toFixed(1)}s`);
+                    }
                 } else if (videoState.p && !videoState.e) {
-                    this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}`);
-                    // ensureVideoPlaying will be called later if target not met
+                    this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
+                    this.lastLoggedVideoTime = -1; // Force next play log
+                } else {
+                     this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}`);
                 }
 
 
@@ -673,10 +681,8 @@ class YouTubeViewWorker {
                         }
                     }
                     const somethingWrongLocator = this.page.locator('text=/Something went wrong/i, text=/An error occurred/i, .ytp-error-content');
-                    let isPlayerErrorVisible = false;
                     try {
                         if (await somethingWrongLocator.first().isVisible({ timeout: 1000 })) {
-                            isPlayerErrorVisible = true;
                             (this.logger.warn || this.logger.warning).call(this.logger, 'CONFIRMED: "Something went wrong" or similar error message visible on player.');
                         }
                     } catch (e) { /* ignore if not visible */ }
@@ -700,6 +706,7 @@ class YouTubeViewWorker {
                             lastKnownGoodVideoTime = currentActualVideoTime;
                             this.maxTimeReachedThisView = currentActualVideoTime;
                             lastProgressTimestamp = Date.now();
+                            this.lastLoggedVideoTime = -1; // Force log after reload
                             this.logger.info(`State after reload and play attempt: CT: ${currentActualVideoTime.toFixed(1)}s`);
                             continue; 
                         } else {
@@ -718,7 +725,6 @@ class YouTubeViewWorker {
             }
             
             if (videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
-                // Explicit log moved to the top of the loop section for video state
                 await this.ensureVideoPlaying(playButtonSelectors);
             }
             
@@ -737,9 +743,9 @@ class YouTubeViewWorker {
                         const boundingBox = await videoElement.boundingBox();
                         if (boundingBox) {
                              await this.page.mouse.move(
-                                 boundingBox.x + random(Math.floor(boundingBox.width * 0.2), Math.floor(boundingBox.width * 0.8)),
-                                 boundingBox.y + random(Math.floor(boundingBox.height * 0.2), Math.floor(boundingBox.height * 0.8)),
-                                 {steps:random(3,7)}
+                                 boundingBox.x + random(Math.floor(boundingBox.width * 0.1), Math.floor(boundingBox.width * 0.9)),
+                                 boundingBox.y + random(Math.floor(boundingBox.height * 0.1), Math.floor(boundingBox.height * 0.9)),
+                                 {steps:random(3,8)}
                              );
                         }
                         this.logger.debug('Simulated mouse hover and move over video.');
@@ -753,30 +759,31 @@ class YouTubeViewWorker {
                         await settingsButton.hover({timeout: 300});
                         this.logger.debug('Simulated hover on settings button.');
                         await sleep(100 + random(100));
-                        await this.page.mouse.move(random(0, this.page.viewportSize().width), random(0, this.page.viewportSize().height / 3), {steps: 2}); // Move mouse to top part of screen
+                        const vp = this.page.viewportSize();
+                        if (vp) await this.page.mouse.move(random(vp.width * 0.1, vp.width * 0.9), random(0, vp.height * 0.1), {steps: 2}); // Move mouse to top part of screen
                     }
-                } catch (e) {this.logger.debug('Minor settings hover interaction error.');}
+                } catch (e) {this.logger.debug(`Minor settings hover interaction error: ${e.message.split('\n')[0]}`);}
             }
              if (loopNumber % 11 === 0) { 
                  try {
                     const videoElementToClick = this.page.locator('video.html5-main-video').first();
                      if (await videoElementToClick.isVisible({timeout:300})) {
-                        await videoElementToClick.focus();
+                        await videoElementToClick.focus().catch(e => this.logger.debug(`Focus error: ${e.message}`)); // Best effort focus
                         await videoElementToClick.click({timeout: 300, position: {x: random(10,50), y: random(10,50)}, delay: random(50,150) });
                         this.logger.debug('Simulated click on video player area.');
                     }
                  } catch(e) {this.logger.debug(`Minor video area click error: ${e.message.split('\n')[0]}`); }
             }
-            if (loopNumber % 13 === 0 && !videoState.p && videoState.rs >=3) { // Occasionally try spacebar if playing
+            if (loopNumber % 13 === 0 && !videoState.p && videoState.rs >=3 && Math.random() < 0.3) { // Occasionally try spacebar if playing (30% chance)
                 try {
                     await this.page.locator('body').press('Space');
                     this.logger.debug('Simulated Spacebar press (pause).');
-                    await sleep(random(500,1500));
+                    await sleep(random(700,1800));
                     await this.page.locator('body').press('Space');
                     this.logger.debug('Simulated Spacebar press (play).');
+                    this.lastLoggedVideoTime = -1; // Force log update after interaction
                 } catch(e) {this.logger.debug(`Spacebar press error: ${e.message.split('\n')[0]}`)}
             }
-
 
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
@@ -1054,7 +1061,7 @@ async function actorMainLogic() {
                 const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s (Max time reached in worker: ${worker.maxTimeReachedThisView.toFixed(1)}s).`;
                 jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
                 overallResults.failedJobs++;
-                (jobLogger.warning || jobLogger.warn).call(jobLogger, message); // Use .warning, fallback to .warn
+                (jobLogger.warning || jobLogger.warn).call(jobLogger, message);
             }
 
         } catch (error) {
