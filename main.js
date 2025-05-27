@@ -20,31 +20,47 @@ async function sleep(ms) {
 }
 
 function getSafeLogger(loggerInstance) {
-    const defaultLogger = {
+    const baseConsoleLogger = {
         info: (msg, data) => console.log(`INFO: ${msg}`, data || ''),
         warn: (msg, data) => console.warn(`WARN: ${msg}`, data || ''),
         error: (msg, data) => console.error(`ERROR: ${msg}`, data || ''),
         debug: (msg, data) => console.log(`DEBUG: ${msg}`, data || ''),
-        child: function(childOpts) { 
-            const newPrefix = childOpts && childOpts.prefix ? (this.prefix || '') + childOpts.prefix : (this.prefix || '');
-            return {
-                ...this, 
-                prefix: newPrefix,
-                info: (m, d) => console.log(`INFO: ${newPrefix}${m}`, d || ''),
-                warn: (m, d) => console.warn(`WARN: ${newPrefix}${m}`, d || ''),
-                error: (m, d) => console.error(`ERROR: ${newPrefix}${m}`, d || ''),
-                debug: (m, d) => console.log(`DEBUG: ${newPrefix}${m}`, d || ''),
-                exception: (e, m, d) => console.error(`EXCEPTION: ${newPrefix}${m}`, e, d || ''),
-            };
-        },
         exception: (e, msg, data) => console.error(`EXCEPTION: ${msg}`, e, data || ''),
     };
-    if (loggerInstance && typeof loggerInstance.info === 'function' && typeof loggerInstance.child === 'function') {
-        return loggerInstance;
+
+    const createChild = function(parentLogger, childOpts) {
+        const parentPrefix = parentLogger.prefix || '';
+        const newPrefix = childOpts && childOpts.prefix ? parentPrefix + childOpts.prefix : parentPrefix;
+        return {
+            info: (m, d) => parentLogger.info(`${newPrefix}${m}`, d),
+            warn: (m, d) => parentLogger.warn(`${newPrefix}${m}`, d),
+            error: (m, d) => parentLogger.error(`${newPrefix}${m}`, d),
+            debug: (m, d) => parentLogger.debug(`${newPrefix}${m}`, d),
+            exception: (e, m, d) => parentLogger.exception(e, `${newPrefix}${m}`, d),
+            child: function(opts) { return createChild(this, opts); }, // `this` refers to the child logger itself
+            prefix: newPrefix // Store the prefix for further children if any
+        };
+    };
+    
+    // Check if the passed loggerInstance has all required methods
+    if (loggerInstance && 
+        typeof loggerInstance.info === 'function' &&
+        typeof loggerInstance.warn === 'function' &&
+        typeof loggerInstance.error === 'function' &&
+        typeof loggerInstance.debug === 'function' &&
+        typeof loggerInstance.child === 'function' &&
+        typeof loggerInstance.exception === 'function') {
+        return loggerInstance; // Apify logger is fine, use it
     }
-    console.error("APIFY LOGGER WAS NOT AVAILABLE OR INCOMPLETE, FALLING BACK TO CONSOLE.");
-    return defaultLogger;
+    
+    // This console.error will use the basic console because loggerInstance is faulty or undefined
+    console.error("APIFY LOGGER WAS NOT AVAILABLE OR INCOMPLETE, FALLING BACK TO CONSOLE-BASED LOGGER.");
+    return { // Return a new object based on baseConsoleLogger that has a working child method
+        ...baseConsoleLogger,
+        child: function(childOpts) { return createChild(baseConsoleLogger, childOpts); } // Initial child from base
+    };
 }
+
 
 function extractVideoIdFromUrl(url, loggerToUse) {
     const safeLogger = getSafeLogger(loggerToUse);
@@ -204,7 +220,7 @@ async function clickIfExists(page, selector, timeout = 3000, loggerToUse) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false }); // force: true can be more reliable for YT
+        await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false }); 
         safeLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
@@ -384,7 +400,7 @@ class YouTubeViewWorker {
     }
 
     async ensureVideoPlaying(playButtonSelectors) { 
-        const logFn = (msg, level = 'info') => this.logger[level](msg);
+        const logFn = (msg, level = 'info') => this.logger[level](msg); // Use this.logger
         logFn('Ensuring video is playing (refined)...');
         for (let attempt = 0; attempt < 4; attempt++) {
             if (this.killed || this.page.isClosed()) return false;
@@ -584,7 +600,7 @@ async function actorMainLogic() {
     }
 
     const jobs = [];
-    const userAgentStrings = [ // Define it once here for search logic
+    const userAgentStrings = [ 
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
@@ -733,7 +749,7 @@ async function actorMainLogic() {
         jobCounter++;
         if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
             actorLog.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}).`);
-            await sleep(effectiveInput.concurrencyInterval * 1000); // USE CUSTOM SLEEP
+            await sleep(effectiveInput.concurrencyInterval * 1000);
         }
     }
     await Promise.all(runPromises.map(p => p.catch(e => { 
