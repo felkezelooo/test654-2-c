@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor, Configuration } = Apify; // Import Configuration as well
+const { Actor } = Apify; // No need for Configuration import for this attempt
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -685,7 +685,7 @@ class YouTubeViewWorker {
     }
 }
 
-// --- Main Actor Logic (With Deeper Debugging for Actor.log using Configuration) ---
+// --- Main Actor Logic (Plan C: Attempting Actor._instance.apifyClient.logger) ---
 async function actorMainLogic() {
     console.log('DEBUG: actorMainLogic started.');
 
@@ -695,42 +695,53 @@ async function actorMainLogic() {
         await Actor.init();
         console.log('DEBUG: Actor.init() completed successfully.');
 
-        // Attempt to get the logger from the global Configuration instance
-        const config = Configuration.getGlobalConfig();
-        if (config && config.get('logger') && typeof config.get('logger').info === 'function') {
-            actorLog = config.get('logger');
-            actorLog.info('DEBUG: Logger obtained successfully via Configuration.getGlobalConfig().get("logger").');
+        // Attempt 1: Try standard Actor.log (known to fail in this specific setup)
+        if (Actor.log && typeof Actor.log.info === 'function') {
+            actorLog = Actor.log;
+            actorLog.info('DEBUG: Logger obtained successfully via Actor.log.');
         } else {
-            console.warn('DEBUG: Could not get logger from Configuration. Attempting Actor.log directly.');
-            actorLog = Actor.log; // This is the line that was problematic before
+            console.warn('DEBUG: Actor.log was undefined or invalid. Dumping Actor object:');
+            console.dir(Actor, { depth: 3 }); // Increased depth slightly
+
+            // Attempt 2: Try accessing through the internal _instance.apifyClient.logger
+            if (Actor._instance && Actor._instance.apifyClient && Actor._instance.apifyClient.logger && typeof Actor._instance.apifyClient.logger.info === 'function') {
+                actorLog = Actor._instance.apifyClient.logger;
+                // Use console.log here immediately to confirm before actorLog.info is trusted
+                console.log('INFO: Successfully obtained logger from Actor._instance.apifyClient.logger. Testing it...');
+                actorLog.info('DEBUG: Logger obtained successfully via Actor._instance.apifyClient.logger and tested.');
+            } else {
+                console.error('CRITICAL DEBUG: Could not obtain logger from Actor.log OR Actor._instance.apifyClient.logger.');
+                if (Actor._instance && Actor._instance.apifyClient) {
+                    console.log('DEBUG: Properties of Actor._instance.apifyClient:');
+                    console.dir(Actor._instance.apifyClient, { depth: 1 });
+                } else if (Actor._instance) {
+                    console.log('DEBUG: Actor._instance exists, but apifyClient or its logger is missing.');
+                } else {
+                    console.log('DEBUG: Actor._instance does not exist.');
+                }
+            }
         }
 
     } catch (initError) {
         console.error('CRITICAL DEBUG: Actor.init() FAILED:', initError);
-        // If Actor.init itself fails, actorLog might not be set, so use console.error
-        // and then try to fail the actor if possible, or exit.
-        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) { // Check if static methods are available
-            try {
-                await Actor.fail(`Actor.init() failed: ${initError.message}`);
-            } catch (failError) {
-                console.error('CRITICAL DEBUG: Actor.fail() also failed:', failError);
-            }
+        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) {
+            try { await Actor.fail(`Actor.init() failed: ${initError.message}`); }
+            catch (failError) { console.error('CRITICAL DEBUG: Actor.fail() also failed:', failError); }
         }
-        process.exit(1); // Exit if init fails critically
+        process.exit(1);
     }
 
     // Now, check the actorLog we *tried* to obtain
     if (!actorLog || typeof actorLog.info !== 'function') {
-        console.error('CRITICAL DEBUG: actorLog is UNDEFINED or not a valid logger after init and configuration check!');
-        console.dir(Actor, { depth: 2 }); // Log Actor object again for comparison
+        console.error('CRITICAL DEBUG: actorLog is STILL UNDEFINED or not a valid logger after all attempts!');
         const fallbackLogger = getSafeLogger(undefined);
-        fallbackLogger.error("actorMainLogic: Using fallback logger because actorLog was invalid.");
+        fallbackLogger.error("actorMainLogic: Using fallback logger because all attempts to get Apify logger failed.");
 
-        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) {
-            await Actor.fail("Logger was not properly initialized.");
+        if (typeof Actor.fail === 'function') { // Check if Actor.fail is a function before calling
+            await Actor.fail("Apify logger could not be initialized.");
         } else {
-            console.error("CRITICAL DEBUG: Actor.fail is not available. Exiting.");
-            process.exit(1); // Critical failure if no proper logger and cannot fail actor
+            console.error("CRITICAL: Actor.fail is not available. Exiting.");
+            process.exit(1);
         }
         return;
     }
