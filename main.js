@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor } = Apify; // No need for Configuration import for this attempt
+const { Actor } = Apify;
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -29,7 +29,7 @@ function getSafeLogger(loggerInstance) {
         debug: (msg, data) => console.log(`DEBUG: ${msg || ''}`, data || ''),
         exception: (e, msg, data) => console.error(`EXCEPTION: ${msg || ''}`, e, data || ''),
     };
-    const createChild = function(parentLogger, childOpts) {
+    const createChildConsole = function(parentLogger, childOpts) { // Renamed to avoid conflict
         const parentPrefix = (parentLogger && parentLogger.prefix) ? parentLogger.prefix : '';
         const newPrefix = childOpts && childOpts.prefix ? parentPrefix + childOpts.prefix : parentPrefix;
         const effectiveParentMethods = (parentLogger && typeof parentLogger.info === 'function') ? parentLogger : baseConsoleLogger;
@@ -39,26 +39,30 @@ function getSafeLogger(loggerInstance) {
             error: (m, d) => effectiveParentMethods.error(`${newPrefix}${m}`, d),
             debug: (m, d) => effectiveParentMethods.debug(`${newPrefix}${m}`, d),
             exception: (e, m, d) => effectiveParentMethods.exception(e, `${newPrefix}${m}`, d),
-            child: function(opts) { return createChild(this, opts); },
+            child: function(opts) { return createChildConsole(this, opts); }, // Use renamed function
             prefix: newPrefix
         };
     };
+
     if (loggerInstance &&
         typeof loggerInstance.info === 'function' &&
-        typeof loggerInstance.warn === 'function' &&
+        typeof loggerInstance.warn === 'function' && // Apify logger has .warn (alias for .warning)
         typeof loggerInstance.error === 'function' &&
-        typeof loggerInstance.debug === 'function' &&
-        typeof loggerInstance.exception === 'function' &&
-        typeof loggerInstance.child === 'function') {
+        typeof loggerInstance.debug === 'function'
+        // Removed .child and .exception from this specific check to be more lenient
+        // as long as core logging methods are present.
+        // Apify's child loggers should still have .child and .exception.
+    ) {
         return loggerInstance;
     }
-    if (!getSafeLogger.hasWarnedOnce) {
-        console.error("SAFE_LOGGER: Apify logger was not available or incomplete, falling back to console-based logger.");
-        getSafeLogger.hasWarnedOnce = true;
+
+    if (!getSafeLogger.hasWarnedOnceGetSafeLogger) { // Unique static property name
+        console.error("GET_SAFE_LOGGER: Provided loggerInstance was invalid or incomplete. Falling back to basic console logger.");
+        getSafeLogger.hasWarnedOnceGetSafeLogger = true;
     }
-    return { ...baseConsoleLogger, child: function(childOpts) { return createChild(this, childOpts); } };
+    return { ...baseConsoleLogger, child: function(childOpts) { return createChildConsole(this, childOpts); } };
 }
-getSafeLogger.hasWarnedOnce = false;
+getSafeLogger.hasWarnedOnceGetSafeLogger = false;
 
 
 function extractVideoIdFromUrl(url, logger) {
@@ -205,7 +209,8 @@ async function getVideoDuration(page, logger) {
                 const video = document.querySelector('video.html5-main-video');
                 return video ? video.duration : null;
             });
-            if (duration && !isNaN(duration) && isFinite(duration) && duration > 0) {
+            // Ensure duration is a positive finite number
+            if (duration && Number.isFinite(duration) && duration > 0) {
                 safeLogger.info(`Video duration found: ${duration} seconds.`);
                 return duration;
             }
@@ -239,7 +244,23 @@ class YouTubeViewWorker {
         this.effectiveInput = effectiveInput;
         this.proxyUrlString = proxyUrlString;
         this.id = uuidv4();
-        this.logger = getSafeLogger(baseLogger).child({ prefix: `Worker-${job.videoId.substring(0, 6)}-${this.id.substring(0,4)}: ` });
+
+        // Directly use the passed baseLogger (which should be a valid Apify logger)
+        // to create a child logger.
+        if (baseLogger && typeof baseLogger.child === 'function') {
+            this.logger = baseLogger.child({ prefix: `Worker-${this.id.substring(0,8)}: ` }); // More unique prefix
+        } else {
+            // This is a fallback and should ideally not be reached if actorMainLogic passes a valid logger.
+            console.error(`WORKER ${this.id.substring(0,8)} CONSTRUCTOR: Invalid baseLogger passed for job ${job.id}. Using basic console fallback.`);
+            this.logger = { // Basic fallback implementing required methods
+                info: (m, d) => console.log(`FB_INFO Worker-${this.id.substring(0,8)}: ${m}`, d || ''),
+                warn: (m, d) => console.warn(`FB_WARN Worker-${this.id.substring(0,8)}: ${m}`, d || ''),
+                error: (m, d) => console.error(`FB_ERROR Worker-${this.id.substring(0,8)}: ${m}`, d || ''),
+                debug: (m, d) => console.log(`FB_DEBUG Worker-${this.id.substring(0,8)}: ${m}`, d || ''),
+                child: function() { return this; } // Simplistic child for fallback
+            };
+        }
+
         this.browser = null; this.context = null; this.page = null; this.killed = false;
         this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
         this.lastReportedVideoTimeSeconds = 0;
@@ -309,11 +330,12 @@ class YouTubeViewWorker {
         await this.page.waitForTimeout(random(2000,4000));
 
         const duration = await getVideoDuration(this.page, this.logger);
-        if (duration && duration > 0) {
+        // Critical check for valid duration
+        if (duration && Number.isFinite(duration) && duration > 0) {
             this.job.video_info.duration = duration;
         } else {
-            this.logger.warn(`Could not determine video duration, using default 300s.`);
-            this.job.video_info.duration = 300;
+            this.logger.error(`CRITICAL: Could not determine a valid video duration. Found: ${duration}. Failing job early.`);
+            throw new Error(`Could not determine valid video duration (got ${duration}).`);
         }
 
         try {
@@ -689,26 +711,25 @@ class YouTubeViewWorker {
 async function actorMainLogic() {
     console.log('DEBUG: actorMainLogic started.');
 
-    let actorLog; // Declare actorLog here
+    let actorLog;
 
     try {
         await Actor.init();
         console.log('DEBUG: Actor.init() completed successfully.');
 
-        // Attempt 1: Try standard Actor.log (known to fail in this specific setup)
         if (Actor.log && typeof Actor.log.info === 'function') {
             actorLog = Actor.log;
-            actorLog.info('DEBUG: Logger obtained successfully via Actor.log.');
+            // Use console.log for this specific debug line to avoid relying on actorLog before it's fully confirmed.
+            console.log('INFO: Logger obtained successfully via standard Actor.log. Testing it...');
+            actorLog.info('DEBUG: Standard Actor.log test successful.');
         } else {
-            console.warn('DEBUG: Actor.log was undefined or invalid. Dumping Actor object:');
-            console.dir(Actor, { depth: 3 }); // Increased depth slightly
+            console.warn('DEBUG: Standard Actor.log was undefined or invalid. Dumping Actor object:');
+            console.dir(Actor, { depth: 3 });
 
-            // Attempt 2: Try accessing through the internal _instance.apifyClient.logger
             if (Actor._instance && Actor._instance.apifyClient && Actor._instance.apifyClient.logger && typeof Actor._instance.apifyClient.logger.info === 'function') {
                 actorLog = Actor._instance.apifyClient.logger;
-                // Use console.log here immediately to confirm before actorLog.info is trusted
                 console.log('INFO: Successfully obtained logger from Actor._instance.apifyClient.logger. Testing it...');
-                actorLog.info('DEBUG: Logger obtained successfully via Actor._instance.apifyClient.logger and tested.');
+                actorLog.info('DEBUG: Logger obtained via Actor._instance.apifyClient.logger and tested.');
             } else {
                 console.error('CRITICAL DEBUG: Could not obtain logger from Actor.log OR Actor._instance.apifyClient.logger.');
                 if (Actor._instance && Actor._instance.apifyClient) {
@@ -724,20 +745,19 @@ async function actorMainLogic() {
 
     } catch (initError) {
         console.error('CRITICAL DEBUG: Actor.init() FAILED:', initError);
-        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) {
+        if (Actor && Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.fail && typeof Actor.fail === 'function') {
             try { await Actor.fail(`Actor.init() failed: ${initError.message}`); }
             catch (failError) { console.error('CRITICAL DEBUG: Actor.fail() also failed:', failError); }
         }
         process.exit(1);
     }
 
-    // Now, check the actorLog we *tried* to obtain
     if (!actorLog || typeof actorLog.info !== 'function') {
         console.error('CRITICAL DEBUG: actorLog is STILL UNDEFINED or not a valid logger after all attempts!');
         const fallbackLogger = getSafeLogger(undefined);
         fallbackLogger.error("actorMainLogic: Using fallback logger because all attempts to get Apify logger failed.");
 
-        if (typeof Actor.fail === 'function') { // Check if Actor.fail is a function before calling
+        if (typeof Actor.fail === 'function') {
             await Actor.fail("Apify logger could not be initialized.");
         } else {
             console.error("CRITICAL: Actor.fail is not available. Exiting.");
@@ -758,7 +778,6 @@ async function actorMainLogic() {
     actorLog.debug('Raw input object:', input);
 
 
-    // --- Full original actor logic below ---
     const defaultInputFromSchema = {
         videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
         watchTypes: ['direct'], refererUrls: [''], searchKeywordsForEachVideo: ['funny cat videos, cute kittens'],
@@ -852,7 +871,9 @@ async function actorMainLogic() {
     let jobCounter = 0;
 
     const processJob = async (job) => {
+        // Use the successfully obtained actorLog to create child loggers
         const jobLogger = actorLog.child({ prefix: `Job-${job.videoId.substring(0,4)}-${job.id.substring(0,4)}: ` });
+
         jobLogger.info(`Starting job ${job.jobIndex + 1}/${jobs.length}, Type: ${job.watchType}, Referer: ${job.referer || 'None'}`);
         let proxyUrlString = null;
         let proxyInfoForLog = 'None';
@@ -927,7 +948,7 @@ async function actorMainLogic() {
             }
         }
 
-        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlString, jobLogger);
+        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlString, jobLogger); // Pass jobLogger
         let jobResultData = {
             jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId,
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
@@ -947,9 +968,9 @@ async function actorMainLogic() {
             } else {
                 jobResultData.status = 'failure_watch_time_not_met';
                 const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s.`;
-                jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
+                jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message; // Append if error already exists
                 overallResults.failedJobs++;
-                jobLogger.warn(message);
+                jobLogger.warn(message); // This should now work if jobLogger is a valid child logger
             }
 
         } catch (error) {
