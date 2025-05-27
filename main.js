@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor } = Apify; // Configuration removed as direct use wasn't the fix
+const { Actor } = Apify;
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -25,7 +25,7 @@ function getSafeLogger(loggerInstance) {
     const baseConsoleLogger = {
         info: (msg, data) => console.log(`CONSOLE_INFO: ${msg || ''}`, data || ''),
         warn: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''),
-        warning: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''),
+        warning: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''), // Alias
         error: (msg, data) => console.error(`CONSOLE_ERROR: ${msg || ''}`, data || ''),
         debug: (msg, data) => console.log(`CONSOLE_DEBUG: ${msg || ''}`, data || ''),
         exception: (e, msg, data) => console.error(`CONSOLE_EXCEPTION: ${msg || ''}`, e, data || ''),
@@ -49,9 +49,8 @@ function getSafeLogger(loggerInstance) {
         (typeof loggerInstance.warn === 'function' || typeof loggerInstance.warning === 'function') &&
         typeof loggerInstance.error === 'function' &&
         typeof loggerInstance.debug === 'function' &&
-        typeof loggerInstance.child === 'function' // Apify loggers should have .child
+        typeof loggerInstance.child === 'function'
     ) {
-        // If .warn is missing but .warning exists (common for Apify Log), create .warn alias
         if (typeof loggerInstance.warn !== 'function' && typeof loggerInstance.warning === 'function') {
             loggerInstance.warn = loggerInstance.warning;
         }
@@ -82,7 +81,7 @@ function extractVideoIdFromUrl(url, logger) {
     } catch (error) {
         safeLogger.error(`Error extracting video ID from URL ${url}: ${error.message}`);
     }
-    safeLogger.warn(`Could not extract valid YouTube video ID from: ${url}`);
+    safeLogger.warn(`Could not extract valid YouTube video ID from: ${url}`); // Use .warn or .warning
     return null;
 }
 
@@ -92,7 +91,7 @@ function random(min, max) {
 }
 
 async function handleYouTubeConsent(page, logger) {
-    const safeLogger = getSafeLogger(logger); // Use passed logger
+    const safeLogger = getSafeLogger(logger);
     safeLogger.info('Checking for YouTube consent dialog...');
     const consentButtonSelectors = [
         'button[aria-label*="Accept all"]', 'button[aria-label*="Accept the use of cookies"]',
@@ -111,7 +110,7 @@ async function handleYouTubeConsent(page, logger) {
                 safeLogger.info('Consent button clicked.');
                 const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
                 if (!stillVisible) { safeLogger.info('Consent dialog likely dismissed.'); return true; }
-                else { safeLogger.warn('Clicked consent, but a dialog might still be visible.');}
+                else { safeLogger.warn('Clicked consent, but a dialog might still be visible.');} // Use .warn or .warning
                 return true;
             }
         } catch (e) {
@@ -137,7 +136,7 @@ const ANTI_DETECTION_ARGS = [
 ];
 
 async function applyAntiDetectionScripts(pageOrContext, logger) {
-    const safeLogger = getSafeLogger(logger); // Use passed logger
+    const safeLogger = getSafeLogger(logger);
     const scriptToInject = () => {
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -202,7 +201,7 @@ async function applyAntiDetectionScripts(pageOrContext, logger) {
 }
 
 async function getVideoDuration(page, logger) {
-    const safeLogger = getSafeLogger(logger); // Use passed logger
+    const safeLogger = getSafeLogger(logger);
     safeLogger.info('Attempting to get video duration.');
     for (let i = 0; i < 15; i++) {
         if (page.isClosed()) { safeLogger.warn("Page closed while getting video duration."); return null; }
@@ -220,12 +219,12 @@ async function getVideoDuration(page, logger) {
         }
         await sleep(1000);
     }
-    safeLogger.warning('Could not determine video duration after 15 seconds.');
+    safeLogger.warning('Could not determine video duration after 15 seconds.'); // Use .warning or .warn
     return null;
 }
 
 async function clickIfExists(page, selector, timeout = 3000, logger) {
-    const safeLogger = getSafeLogger(logger); // Use passed logger
+    const safeLogger = getSafeLogger(logger);
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
@@ -250,15 +249,18 @@ class YouTubeViewWorker {
         if (baseLogger && typeof baseLogger.child === 'function') {
             this.logger = baseLogger.child({ prefix: workerPrefix });
             if (!(this.logger && typeof this.logger.info === 'function' && (typeof this.logger.warn === 'function' || typeof this.logger.warning === 'function'))) {
-                console.error(`WORKER_CONSTRUCTOR ${this.id.substring(0,8)}: Child logger from Apify logger is missing essential methods. Using fallback.`);
+                console.error(`WORKER_CONSTRUCTOR_ERROR for ${this.id.substring(0,6)}: baseLogger.child() did NOT return a logger with .info AND .warn/warning. This is unexpected. Falling back to created fallback logger.`);
                 this.logger = this.createFallbackLogger(workerPrefix);
             } else {
-                 // This console.log is for bootstrap debugging only, to confirm logger creation
                  console.log(`WORKER_CONSTRUCTOR_DEBUG for ${this.id.substring(0,6)}: this.logger seems valid with .info and .warn/warning after baseLogger.child().`);
             }
         } else {
             console.error(`WORKER_CONSTRUCTOR_ERROR for ${job.id}: baseLogger is invalid or lacked .child(). Using created fallback logger.`);
             this.logger = this.createFallbackLogger(workerPrefix);
+        }
+        // Ensure .warn is an alias for .warning if using Apify's logger structure
+        if (this.logger && typeof this.logger.warn !== 'function' && typeof this.logger.warning === 'function') {
+            this.logger.warn = this.logger.warning;
         }
         
         this.killed = false;
@@ -277,12 +279,13 @@ class YouTubeViewWorker {
             warning: (m, d) => console.warn(`WARN ${prefix}${m}`, d || ''),
             error: (m, d) => console.error(`ERROR ${prefix}${m}`, d || ''),
             debug: (m, d) => console.log(`DEBUG ${prefix}${m}`, d || ''),
-            child: function(childOpts) { // Fallback child should also return a prefixed logger
-                const newPrefix = (this.prefix || prefix) + (childOpts && childOpts.prefix ? childOpts.prefix : '');
-                return this.createFallbackLogger(newPrefix); // Call own method to ensure structure
-            }.bind(this) // Bind 'this' if createFallbackLogger is not a static method or ensure it's accessible
+            child: function(childOpts) {
+                const newPrefix = (this.prefix || prefix || '') + (childOpts && childOpts.prefix ? childOpts.prefix : '');
+                return this.createFallbackLogger(newPrefix);
+            }.bind(this)
         };
     }
+
 
     async startWorker() {
         this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
@@ -347,12 +350,9 @@ class YouTubeViewWorker {
         this.page = await this.context.newPage();
         this.logger.info('New page created.');
 
-
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
-        // Changed waitUntil to 'load' for main navigation
-        await this.page.goto(this.job.videoUrl, { waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.9 }); // Give more time to 'load'
+        await this.page.goto(this.job.videoUrl, { waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.9 });
         this.logger.info('Navigation (load event) complete.');
-        // Optional: short networkidle after load
         await this.page.waitForLoadState('networkidle', { timeout: this.effectiveInput.timeout * 1000 * 0.1 }).catch(e => this.logger.warn(`Page 'networkidle' state (post-load) timeout: ${e.message.split('\n')[0]}`));
 
 
@@ -464,7 +464,7 @@ class YouTubeViewWorker {
 
     async ensureVideoPlaying(playButtonSelectors) {
         const logFn = (msg, level = 'info') => {
-            const loggerMethod = this.logger[level] || (level === 'warn' && this.logger.warning) || this.logger.info;
+            const loggerMethod = this.logger[level] || (level === 'warn' && (this.logger.warning || this.logger.warn)) || this.logger.info;
             loggerMethod.call(this.logger, msg);
         };
         logFn('Ensuring video is playing (v4.1)...');
@@ -553,17 +553,17 @@ class YouTubeViewWorker {
 
         const overallWatchStartTime = Date.now();
         const maxOverallWatchDurationMs = this.effectiveInput.timeout * 1000 * 0.90;
-        const checkIntervalMs = 2500; // Reduced check interval
+        const checkIntervalMs = 1000; // Reduced check interval (was 2500, before that 3500)
 
         let consecutiveStallChecks = 0;
         const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2;
         let recoveryAttemptsThisJob = 0;
-        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 1; // Limit to 1 page reload for now
+        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 1;
 
         let lastProgressTimestamp = Date.now();
         let lastKnownGoodVideoTime = 0;
         this.maxTimeReachedThisView = 0;
-        let currentActualVideoTime = 0; // Define it here for broader scope within the loop
+        let currentActualVideoTime = 0;
 
 
         while (!this.killed) {
@@ -602,7 +602,7 @@ class YouTubeViewWorker {
                     continue;
                  }
 
-                currentActualVideoTime = videoState.ct || 0; // Update here
+                currentActualVideoTime = videoState.ct || 0;
                 if (currentActualVideoTime > this.maxTimeReachedThisView) {
                     this.maxTimeReachedThisView = currentActualVideoTime;
                 }
@@ -615,7 +615,7 @@ class YouTubeViewWorker {
 
                 let isStalledThisCheck = false;
                 if (!videoState.p && videoState.rs >= 2) {
-                    if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) {
+                    if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) { // 10s no progress
                         isStalledThisCheck = true;
                     } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) {
                         lastKnownGoodVideoTime = currentActualVideoTime;
@@ -637,7 +637,7 @@ class YouTubeViewWorker {
                     
                     if (Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.isAtHome()) {
                         try {
-                            const stallTime = new Date().toISOString().replace(/:/g, '-');
+                            const stallTime = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '_'); // Make filename safer
                             const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
                             this.logger.info(`Taking screenshot due to stall: ${screenshotKey}`);
                             const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
@@ -656,7 +656,7 @@ class YouTubeViewWorker {
                         if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
                             this.logger.warn(`Attempting recovery ${recoveryAttemptsThisJob + 1}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
                             recoveryAttemptsThisJob++;
-                            consecutiveStallChecks = 0; // Reset for next potential stall after recovery
+                            consecutiveStallChecks = 0;
                             
                             this.logger.info('Attempting page reload for recovery.');
                             await this.page.reload({ waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.6 });
@@ -696,11 +696,12 @@ class YouTubeViewWorker {
                 this.logger.info(`Target watch time reached. Max Reached: ${this.maxTimeReachedThisView.toFixed(1)}s`); break;
             }
             
-            if (Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs) % 5 === 0 ) { // Interaction every ~12.5s if checkInterval is 2.5s
+            const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs);
+            if (loopNumber % 3 === 0) { // Interaction every ~3s if checkIntervalMs is 1s
                  try {
-                    const videoElement = this.page.locator('video.html5-main-video, video.rumble-player-video').first(); // More generic video selector
+                    const videoElement = this.page.locator('video.html5-main-video, video.rumble-player-video').first();
                     if (await videoElement.isVisible({timeout:500})) {
-                        await videoElement.hover({timeout: 1000}); // Increased hover timeout
+                        await videoElement.hover({timeout: 1000});
                         await sleep(100 + random(100));
                         const boundingBox = await videoElement.boundingBox();
                         if (boundingBox) {
@@ -714,6 +715,27 @@ class YouTubeViewWorker {
                     }
                  } catch(e) {this.logger.debug(`Minor interaction simulation error: ${e.message.split('\n')[0]}. Ignoring.`);}
             }
+            if (loopNumber % 7 === 0) { // Less frequent
+                try {
+                    const settingsButton = this.page.locator('.ytp-settings-button').first();
+                    if (await settingsButton.isVisible({timeout: 300})) {
+                        await settingsButton.hover({timeout: 300});
+                        this.logger.debug('Simulated hover on settings button.');
+                        await sleep(100 + random(100));
+                        await this.page.mouse.move(random(50,100), random(50,100), {steps: 2}); // Move away
+                    }
+                } catch (e) {this.logger.debug('Minor settings hover interaction error.');}
+            }
+             if (loopNumber % 11 === 0) { 
+                 try {
+                    const videoElementToClick = this.page.locator('video.html5-main-video').first();
+                    if (await videoElementToClick.isVisible({timeout:300})) {
+                        await videoElementToClick.click({timeout: 300, position: {x: 50, y: 50}, delay: random(50,150) });
+                        this.logger.debug('Simulated click on video player area.');
+                    }
+                 } catch(e) {this.logger.debug('Minor video area click error.'); }
+            }
+
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
         const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
@@ -772,7 +794,7 @@ async function actorMainLogic() {
         process.exit(1);
     }
 
-    if (!actorLog || typeof actorLog.info !== 'function' || typeof (actorLog.warn || actorLog.warning) !== 'function') { // Check for warn or warning
+    if (!actorLog || typeof actorLog.info !== 'function' || !(typeof actorLog.warn === 'function' || typeof actorLog.warning === 'function')) {
         console.error('CRITICAL DEBUG: actorLog is STILL UNDEFINED or not a valid logger after all attempts!');
         const fallbackLogger = getSafeLogger(undefined);
         fallbackLogger.error("actorMainLogic: Using fallback logger because all attempts to get Apify logger failed (final check).");
@@ -780,11 +802,9 @@ async function actorMainLogic() {
         else { console.error("CRITICAL: Actor.fail is not available. Exiting."); process.exit(1); }
         return;
     }
-    // Ensure actorLog.warn exists, alias if necessary
     if (typeof actorLog.warn !== 'function' && typeof actorLog.warning === 'function') {
         actorLog.warn = actorLog.warning;
     }
-
 
     actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic).');
     const input = await Actor.getInput();
@@ -861,7 +881,7 @@ async function actorMainLogic() {
     for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
         const url = effectiveInput.videoUrls[i];
         const videoId = extractVideoIdFromUrl(url, actorLog);
-        if (!videoId) { actorLog.warn(`Invalid YouTube URL/ID: "${url}". Skipping.`); await Actor.pushData({ url, status: 'error', error: 'Invalid YouTube URL' }); continue; }
+        if (!videoId) { (actorLog.warn || actorLog.warning).call(actorLog, `Invalid YouTube URL/ID: "${url}". Skipping.`); await Actor.pushData({ url, status: 'error', error: 'Invalid YouTube URL' }); continue; }
 
         const watchType = (effectiveInput.watchTypes && effectiveInput.watchTypes[i]) || 'direct';
         const refererUrl = (watchType === 'referer' && effectiveInput.refererUrls && effectiveInput.refererUrls[i] && effectiveInput.refererUrls[i].trim() !== "")
@@ -890,11 +910,9 @@ async function actorMainLogic() {
 
     const processJob = async (job) => {
         const jobLogger = actorLog.child({ prefix: `Job-${job.videoId.substring(0,4)}-${job.id.substring(0,4)}: ` });
-        // Ensure jobLogger also has .warn aliased if needed
-        if (typeof jobLogger.warn !== 'function' && typeof jobLogger.warning === 'function') {
+        if (typeof jobLogger.warn !== 'function' && typeof jobLogger.warning === 'function') { // Ensure .warn alias for child
             jobLogger.warn = jobLogger.warning;
         }
-
 
         jobLogger.info(`Starting job ${job.jobIndex + 1}/${jobs.length}, Type: ${job.watchType}, Referer: ${job.referer || 'None'}`);
         let proxyUrlString = null;
@@ -975,7 +993,9 @@ async function actorMainLogic() {
             jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId,
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
             watchTypePerformed: job.watchType,
-            error: null
+            error: null,
+            lastReportedVideoTimeSeconds: 0, // Ensure this field exists for assignment
+            targetVideoPlayTimeSeconds: 0    // Ensure this field exists for assignment
         };
 
         try {
@@ -989,20 +1009,21 @@ async function actorMainLogic() {
                 jobLogger.info(`Job success: Watched ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s / ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s`);
             } else {
                 jobResultData.status = 'failure_watch_time_not_met';
-                const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s.`;
+                const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s (Max time reached in worker: ${worker.maxTimeReachedThisView.toFixed(1)}s).`;
                 jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
                 overallResults.failedJobs++;
-                jobLogger.warning(message); // Use .warning here
+                (jobLogger.warning || jobLogger.warn).call(jobLogger, message); // Use warning, fallback to warn
             }
 
         } catch (error) {
-            jobLogger.error(`Job failed with exception: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,5).join(' | ')});
+            jobLogger.error(`Job failed with exception: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,7).join(' | ') });
             jobResultData.status = 'failure_exception';
-            jobResultData.error = error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,3).join(' | ')}` : '');
+            jobResultData.error = error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,5).join(' | ')}` : '');
+            jobResultData.lastReportedVideoTimeSeconds = worker.maxTimeReachedThisView; // Record progress before error
             overallResults.failedJobs++;
         } finally {
             await worker.kill();
-            jobLogger.info(`Finished. Status: ${jobResultData.status}${jobResultData.error ? ` - Error: ${jobResultData.error.substring(0,100)}...` : '' }`);
+            jobLogger.info(`Finished job. Status: ${jobResultData.status}. Watched: ${(jobResultData.lastReportedVideoTimeSeconds || 0).toFixed(1)}s`);
         }
         overallResults.details.push(jobResultData);
         await Actor.pushData(jobResultData);
@@ -1011,7 +1032,7 @@ async function actorMainLogic() {
     const runPromises = [];
     for (const job of jobs) {
         if (activeWorkers.size >= effectiveInput.concurrency) {
-            // Use .warning for Apify logger
+            (actorLog.warning || actorLog.warn).call(actorLog, `Error during Promise.race (worker slot wait): Not an error, just waiting for slot.`); // Example, adjust as needed
             await Promise.race(Array.from(activeWorkers)).catch(e => (actorLog.warning || actorLog.warn).call(actorLog, `Error during Promise.race (worker slot wait): ${e.message}`));
         }
         const promise = processJob(job).catch(e => {
