@@ -1,5 +1,5 @@
 const Apify = require('apify');
-const { Actor } = Apify;
+const { Actor, Configuration } = Apify; // Import Configuration as well
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -685,46 +685,53 @@ class YouTubeViewWorker {
     }
 }
 
-// --- Main Actor Logic (With Deeper Debugging for Actor.log) ---
+// --- Main Actor Logic (With Deeper Debugging for Actor.log using Configuration) ---
 async function actorMainLogic() {
     console.log('DEBUG: actorMainLogic started.');
+
+    let actorLog; // Declare actorLog here
 
     try {
         await Actor.init();
         console.log('DEBUG: Actor.init() completed successfully.');
+
+        // Attempt to get the logger from the global Configuration instance
+        const config = Configuration.getGlobalConfig();
+        if (config && config.get('logger') && typeof config.get('logger').info === 'function') {
+            actorLog = config.get('logger');
+            actorLog.info('DEBUG: Logger obtained successfully via Configuration.getGlobalConfig().get("logger").');
+        } else {
+            console.warn('DEBUG: Could not get logger from Configuration. Attempting Actor.log directly.');
+            actorLog = Actor.log; // This is the line that was problematic before
+        }
+
     } catch (initError) {
         console.error('CRITICAL DEBUG: Actor.init() FAILED:', initError);
-        process.exit(1);
-    }
-
-    // DEBUG: Log the entire Actor object to inspect its properties
-    console.log('DEBUG: Dumping Actor object after init:');
-    console.dir(Actor, { depth: 2 }); // Log with some depth to see properties
-
-    // DEBUG: Specifically check for the 'log' property and its type
-    if (Actor.hasOwnProperty('log')) {
-        console.log(`DEBUG: Actor object HAS a property named 'log'. Type: ${typeof Actor.log}`);
-        if (Actor.log && typeof Actor.log.info === 'function') {
-            console.log('DEBUG: Actor.log.info IS a function.');
-        } else {
-            console.error('CRITICAL DEBUG: Actor.log.info is NOT a function or Actor.log is null/undefined.');
-            if (Actor.log) {
-                console.log('DEBUG: Properties of Actor.log:');
-                console.dir(Actor.log, { depth: 1 });
+        // If Actor.init itself fails, actorLog might not be set, so use console.error
+        // and then try to fail the actor if possible, or exit.
+        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) { // Check if static methods are available
+            try {
+                await Actor.fail(`Actor.init() failed: ${initError.message}`);
+            } catch (failError) {
+                console.error('CRITICAL DEBUG: Actor.fail() also failed:', failError);
             }
         }
-    } else {
-        console.error('CRITICAL DEBUG: Actor object DOES NOT HAVE a property named "log".');
+        process.exit(1); // Exit if init fails critically
     }
 
-    // Assign and use, this will likely still fail if the above checks show issues.
-    const actorLog = Actor.log;
-
+    // Now, check the actorLog we *tried* to obtain
     if (!actorLog || typeof actorLog.info !== 'function') {
-        console.error('CRITICAL DEBUG (after assignment): actorLog is UNDEFINED or not a valid logger!');
-        const fallbackLogger = getSafeLogger(undefined); // getSafeLogger will use console
-        fallbackLogger.error("actorMainLogic: Using fallback logger because Actor.log was invalid after assignment.");
-        await Apify.Actor.fail("Actor.log was not initialized correctly (after assignment)."); // Use Apify.Actor static method
+        console.error('CRITICAL DEBUG: actorLog is UNDEFINED or not a valid logger after init and configuration check!');
+        console.dir(Actor, { depth: 2 }); // Log Actor object again for comparison
+        const fallbackLogger = getSafeLogger(undefined);
+        fallbackLogger.error("actorMainLogic: Using fallback logger because actorLog was invalid.");
+
+        if (Actor && Actor.isAtHome && Actor.isAtHome() && Actor.fail) {
+            await Actor.fail("Logger was not properly initialized.");
+        } else {
+            console.error("CRITICAL DEBUG: Actor.fail is not available. Exiting.");
+            process.exit(1); // Critical failure if no proper logger and cannot fail actor
+        }
         return;
     }
 
@@ -740,7 +747,7 @@ async function actorMainLogic() {
     actorLog.debug('Raw input object:', input);
 
 
-    // --- Full original actor logic below, will only run if actorLog is valid ---
+    // --- Full original actor logic below ---
     const defaultInputFromSchema = {
         videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
         watchTypes: ['direct'], refererUrls: [''], searchKeywordsForEachVideo: ['funny cat videos, cute kittens'],
