@@ -25,7 +25,7 @@ function getSafeLogger(loggerInstance) {
     const baseConsoleLogger = {
         info: (msg, data) => console.log(`CONSOLE_INFO: ${msg || ''}`, data || ''),
         warn: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''),
-        warning: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''), // Alias
+        warning: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''),
         error: (msg, data) => console.error(`CONSOLE_ERROR: ${msg || ''}`, data || ''),
         debug: (msg, data) => console.log(`CONSOLE_DEBUG: ${msg || ''}`, data || ''),
         exception: (e, msg, data) => console.error(`CONSOLE_EXCEPTION: ${msg || ''}`, e, data || ''),
@@ -81,7 +81,7 @@ function extractVideoIdFromUrl(url, logger) {
     } catch (error) {
         safeLogger.error(`Error extracting video ID from URL ${url}: ${error.message}`);
     }
-    safeLogger.warn(`Could not extract valid YouTube video ID from: ${url}`); // Use .warn or .warning
+    (safeLogger.warn || safeLogger.warning).call(safeLogger, `Could not extract valid YouTube video ID from: ${url}`);
     return null;
 }
 
@@ -110,7 +110,7 @@ async function handleYouTubeConsent(page, logger) {
                 safeLogger.info('Consent button clicked.');
                 const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
                 if (!stillVisible) { safeLogger.info('Consent dialog likely dismissed.'); return true; }
-                else { safeLogger.warn('Clicked consent, but a dialog might still be visible.');} // Use .warn or .warning
+                else { (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Clicked consent, but a dialog might still be visible.');}
                 return true;
             }
         } catch (e) {
@@ -204,7 +204,7 @@ async function getVideoDuration(page, logger) {
     const safeLogger = getSafeLogger(logger);
     safeLogger.info('Attempting to get video duration.');
     for (let i = 0; i < 15; i++) {
-        if (page.isClosed()) { safeLogger.warn("Page closed while getting video duration."); return null; }
+        if (page.isClosed()) { (safeLogger.warn || safeLogger.warning).call(safeLogger, "Page closed while getting video duration."); return null; }
         try {
             const duration = await page.evaluate(() => {
                 const video = document.querySelector('video.html5-main-video');
@@ -219,7 +219,7 @@ async function getVideoDuration(page, logger) {
         }
         await sleep(1000);
     }
-    safeLogger.warning('Could not determine video duration after 15 seconds.'); // Use .warning or .warn
+    (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Could not determine video duration after 15 seconds.');
     return null;
 }
 
@@ -232,7 +232,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) {
         safeLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
-        if (page.isClosed()) { safeLogger.warn(`Page closed attempting to click: ${selector} - ${e.message.split('\n')[0]}`); return false;}
+        if (page.isClosed()) { (safeLogger.warn || safeLogger.warning).call(safeLogger, `Page closed attempting to click: ${selector} - ${e.message.split('\n')[0]}`); return false;}
         safeLogger.debug(`Selector not found/clickable: ${selector} - Error: ${e.message.split('\n')[0]}`);
         return false;
     }
@@ -258,7 +258,6 @@ class YouTubeViewWorker {
             console.error(`WORKER_CONSTRUCTOR_ERROR for ${job.id}: baseLogger is invalid or lacked .child(). Using created fallback logger.`);
             this.logger = this.createFallbackLogger(workerPrefix);
         }
-        // Ensure .warn is an alias for .warning if using Apify's logger structure
         if (this.logger && typeof this.logger.warn !== 'function' && typeof this.logger.warning === 'function') {
             this.logger.warn = this.logger.warning;
         }
@@ -269,7 +268,7 @@ class YouTubeViewWorker {
         this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
         this.lastReportedVideoTimeSeconds = 0;
         
-        this.logger.info('Worker instance constructed and logger tested.');
+        this.logger.info('Worker instance constructed.'); // Simplified log
     }
 
     createFallbackLogger(prefix) {
@@ -285,7 +284,6 @@ class YouTubeViewWorker {
             }.bind(this)
         };
     }
-
 
     async startWorker() {
         this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
@@ -457,7 +455,7 @@ class YouTubeViewWorker {
             }
             await sleep(adCheckInterval);
         }
-        if (adWatchLoop >= maxAdLoopIterations) this.logger.warn('Max ad loop iterations reached in handleAds.');
+        if (adWatchLoop >= maxAdLoopIterations) (this.logger.warn || this.logger.warning).call(this.logger, 'Max ad loop iterations reached in handleAds.');
         this.logger.info('Ad handling logic finished for this check.');
         return adWasPlayingThisCheck;
     }
@@ -553,7 +551,7 @@ class YouTubeViewWorker {
 
         const overallWatchStartTime = Date.now();
         const maxOverallWatchDurationMs = this.effectiveInput.timeout * 1000 * 0.90;
-        const checkIntervalMs = 1000; // Reduced check interval (was 2500, before that 3500)
+        const checkIntervalMs = 1000; // Reduced further for more frequent interaction checks
 
         let consecutiveStallChecks = 0;
         const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2;
@@ -565,12 +563,13 @@ class YouTubeViewWorker {
         this.maxTimeReachedThisView = 0;
         let currentActualVideoTime = 0;
 
-
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
-            if (this.page.isClosed()) { this.logger.warn('Page closed during watch loop.'); break; }
+            const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs);
+
+            if (this.page.isClosed()) { (this.logger.warn || this.logger.warning).call(this.logger, 'Page closed during watch loop.'); break; }
             if (Date.now() - overallWatchStartTime > maxOverallWatchDurationMs) {
-                this.logger.warn('Max watch duration for this video exceeded. Ending.'); break;
+                (this.logger.warn || this.logger.warning).call(this.logger, 'Max watch duration for this video exceeded. Ending.'); break;
             }
 
             const adWasPlayingPreviously = await this.handleAds();
@@ -594,7 +593,7 @@ class YouTubeViewWorker {
                     };
                 });
                 if (!videoState) {
-                    this.logger.warn('Video element not found in evaluate. Trying to recover.');
+                    (this.logger.warn || this.logger.warning).call(this.logger, 'Video element not found in evaluate. Trying to recover.');
                     await sleep(2000);
                     if (!(await this.page.locator('video.html5-main-video').count() > 0)) {
                         throw new Error('Video element disappeared definitively.');
@@ -615,7 +614,7 @@ class YouTubeViewWorker {
 
                 let isStalledThisCheck = false;
                 if (!videoState.p && videoState.rs >= 2) {
-                    if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) { // 10s no progress
+                    if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) {
                         isStalledThisCheck = true;
                     } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) {
                         lastKnownGoodVideoTime = currentActualVideoTime;
@@ -627,17 +626,17 @@ class YouTubeViewWorker {
                 }
 
                 if (videoState.rs === 0 && currentActualVideoTime < 5 && (Date.now() - overallWatchStartTime > 20000)) {
-                     this.logger.warn(`Critical Stall: readyState is 0 and video time < 5s after 20s. CurrentTime: ${currentActualVideoTime.toFixed(1)}`);
+                     (this.logger.warn || this.logger.warning).call(this.logger, `Critical Stall: readyState is 0 and video time < 5s after 20s. CurrentTime: ${currentActualVideoTime.toFixed(1)}`);
                      isStalledThisCheck = true;
                 }
 
                 if (isStalledThisCheck) {
                     consecutiveStallChecks++;
-                    this.logger.warn(`Playback stalled. CurrentTime: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls: ${consecutiveStallChecks}. RS: ${videoState.rs}, NS: ${videoState.ns}`);
+                    (this.logger.warn || this.logger.warning).call(this.logger, `Playback stalled. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls: ${consecutiveStallChecks}. RS: ${videoState.rs}, NS: ${videoState.ns}`);
                     
                     if (Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.isAtHome()) {
                         try {
-                            const stallTime = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '_'); // Make filename safer
+                            const stallTime = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '_');
                             const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
                             this.logger.info(`Taking screenshot due to stall: ${screenshotKey}`);
                             const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
@@ -645,25 +644,37 @@ class YouTubeViewWorker {
                                 await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
                                 this.logger.info(`Screenshot saved: ${screenshotKey}`);
                             } else {
-                                this.logger.warn("Actor.setValue is not available to save screenshot.");
+                                (this.logger.warn || this.logger.warning).call(this.logger, "Actor.setValue is not available to save screenshot.");
                             }
                         } catch (screenshotError) {
                             this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`);
                         }
                     }
+                    // Check for "Something went wrong" text
+                    const somethingWrongLocator = this.page.locator('text=/Something went wrong/i, text=/An error occurred/i, .ytp-error-content');
+                    let isPlayerErrorVisible = false;
+                    try {
+                        if (await somethingWrongLocator.first().isVisible({ timeout: 1000 })) {
+                            isPlayerErrorVisible = true;
+                            (this.logger.warn || this.logger.warning).call(this.logger, 'CONFIRMED: "Something went wrong" or similar error message visible on player.');
+                        }
+                    } catch (e) { /* ignore if not visible */ }
+
 
                     if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
                         if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                            this.logger.warn(`Attempting recovery ${recoveryAttemptsThisJob + 1}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
+                            (this.logger.warn || this.logger.warning).call(this.logger, `Stalled. Attempting recovery ${recoveryAttemptsThisJob + 1}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
                             recoveryAttemptsThisJob++;
                             consecutiveStallChecks = 0;
                             
+                            // Always reload if "Something went wrong" is visible or if it's a second recovery attempt for other stalls.
+                            // For now, with MAX_RECOVERY_ATTEMPTS_PER_JOB = 1, this means always reload on detected stall that hits MAX_STALL_CHECKS.
                             this.logger.info('Attempting page reload for recovery.');
                             await this.page.reload({ waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.6 });
                             this.logger.info('Page reloaded. Re-handling consent & playback...');
                             await handleYouTubeConsent(this.page, this.logger);
                             await this.ensureVideoPlaying(playButtonSelectors);
-
+                            
                             lastKnownGoodVideoTime = 0;
                             this.maxTimeReachedThisView = 0;
                             currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
@@ -680,9 +691,9 @@ class YouTubeViewWorker {
                 }
             } catch (e) {
                 if (e.message.includes('Target closed') || e.message.includes('Protocol error')) {
-                    this.logger.warn(`Watch loop error (Target closed/Protocol): ${e.message}`); throw e;
+                    (this.logger.warn || this.logger.warning).call(this.logger, `Watch loop error (Target closed/Protocol): ${e.message}`); throw e;
                 }
-                 this.logger.warn(`Video state eval/check error: ${e.message.split('\n')[0]}`);
+                 (this.logger.warn || this.logger.warning).call(this.logger, `Video state eval/check error: ${e.message.split('\n')[0]}`);
                  if (e.message.includes('Unrecoverable video stall') || e.message.includes('recovery reloads exhausted')) throw e;
                  await sleep(checkIntervalMs); continue;
             }
@@ -696,8 +707,8 @@ class YouTubeViewWorker {
                 this.logger.info(`Target watch time reached. Max Reached: ${this.maxTimeReachedThisView.toFixed(1)}s`); break;
             }
             
-            const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs);
-            if (loopNumber % 3 === 0) { // Interaction every ~3s if checkIntervalMs is 1s
+            // More frequent and varied interactions
+            if (loopNumber % 3 === 0) { // Approx every 3 * 1s = 3s
                  try {
                     const videoElement = this.page.locator('video.html5-main-video, video.rumble-player-video').first();
                     if (await videoElement.isVisible({timeout:500})) {
@@ -713,28 +724,30 @@ class YouTubeViewWorker {
                         }
                         this.logger.debug('Simulated mouse hover and move over video.');
                     }
-                 } catch(e) {this.logger.debug(`Minor interaction simulation error: ${e.message.split('\n')[0]}. Ignoring.`);}
+                 } catch(e) {this.logger.debug(`Minor interaction simulation error (mouse move): ${e.message.split('\n')[0]}. Ignoring.`);}
             }
-            if (loopNumber % 7 === 0) { // Less frequent
+            if (loopNumber % 7 === 0) { // Approx every 7s
                 try {
                     const settingsButton = this.page.locator('.ytp-settings-button').first();
                     if (await settingsButton.isVisible({timeout: 300})) {
                         await settingsButton.hover({timeout: 300});
                         this.logger.debug('Simulated hover on settings button.');
                         await sleep(100 + random(100));
-                        await this.page.mouse.move(random(50,100), random(50,100), {steps: 2}); // Move away
+                        await this.page.mouse.move(random(50,100), random(50,100), {steps: 2});
                     }
                 } catch (e) {this.logger.debug('Minor settings hover interaction error.');}
             }
-             if (loopNumber % 11 === 0) { 
+             if (loopNumber % 11 === 0) { // Approx every 11s
                  try {
                     const videoElementToClick = this.page.locator('video.html5-main-video').first();
-                    if (await videoElementToClick.isVisible({timeout:300})) {
-                        await videoElementToClick.click({timeout: 300, position: {x: 50, y: 50}, delay: random(50,150) });
+                     if (await videoElementToClick.isVisible({timeout:300})) {
+                        await videoElementToClick.focus(); // Ensure focus before click
+                        await videoElementToClick.click({timeout: 300, position: {x: random(10,50), y: random(10,50)}, delay: random(50,150) });
                         this.logger.debug('Simulated click on video player area.');
                     }
                  } catch(e) {this.logger.debug('Minor video area click error.'); }
             }
+
 
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
@@ -750,11 +763,11 @@ class YouTubeViewWorker {
     async kill() {
         this.killed = true;
         this.logger.info('Kill signal. Closing resources.');
-        if (this.page && !this.page.isClosed()) { await this.page.close().catch(e => this.logger.warn(`Page close error: ${e.message}`)); }
+        if (this.page && !this.page.isClosed()) { await this.page.close().catch(e => (this.logger.warn || this.logger.warning).call(this.logger, `Page close error: ${e.message}`)); }
         this.page = null;
-        if (this.context) { await this.context.close().catch(e => this.logger.warn(`Context close error: ${e.message}`)); }
+        if (this.context) { await this.context.close().catch(e => (this.logger.warn || this.logger.warning).call(this.logger, `Context close error: ${e.message}`)); }
         this.context = null;
-        if (this.browser) { await this.browser.close().catch(e => this.logger.warn(`Browser close error: ${e.message}`)); }
+        if (this.browser) { await this.browser.close().catch(e => (this.logger.warn || this.logger.warning).call(this.logger, `Browser close error: ${e.message}`)); }
         this.browser = null;
         this.logger.info('Resources closed.');
     }
@@ -910,7 +923,7 @@ async function actorMainLogic() {
 
     const processJob = async (job) => {
         const jobLogger = actorLog.child({ prefix: `Job-${job.videoId.substring(0,4)}-${job.id.substring(0,4)}: ` });
-        if (typeof jobLogger.warn !== 'function' && typeof jobLogger.warning === 'function') { // Ensure .warn alias for child
+        if (typeof jobLogger.warn !== 'function' && typeof jobLogger.warning === 'function') {
             jobLogger.warn = jobLogger.warning;
         }
 
@@ -994,8 +1007,8 @@ async function actorMainLogic() {
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
             watchTypePerformed: job.watchType,
             error: null,
-            lastReportedVideoTimeSeconds: 0, // Ensure this field exists for assignment
-            targetVideoPlayTimeSeconds: 0    // Ensure this field exists for assignment
+            lastReportedVideoTimeSeconds: 0,
+            targetVideoPlayTimeSeconds: 0
         };
 
         try {
@@ -1012,14 +1025,14 @@ async function actorMainLogic() {
                 const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s (Max time reached in worker: ${worker.maxTimeReachedThisView.toFixed(1)}s).`;
                 jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
                 overallResults.failedJobs++;
-                (jobLogger.warning || jobLogger.warn).call(jobLogger, message); // Use warning, fallback to warn
+                (jobLogger.warning || jobLogger.warn).call(jobLogger, message); // Use .warning, fallback to .warn
             }
 
         } catch (error) {
             jobLogger.error(`Job failed with exception: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,7).join(' | ') });
             jobResultData.status = 'failure_exception';
             jobResultData.error = error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,5).join(' | ')}` : '');
-            jobResultData.lastReportedVideoTimeSeconds = worker.maxTimeReachedThisView; // Record progress before error
+            jobResultData.lastReportedVideoTimeSeconds = worker.maxTimeReachedThisView;
             overallResults.failedJobs++;
         } finally {
             await worker.kill();
@@ -1032,7 +1045,7 @@ async function actorMainLogic() {
     const runPromises = [];
     for (const job of jobs) {
         if (activeWorkers.size >= effectiveInput.concurrency) {
-            (actorLog.warning || actorLog.warn).call(actorLog, `Error during Promise.race (worker slot wait): Not an error, just waiting for slot.`); // Example, adjust as needed
+            (actorLog.warning || actorLog.warn).call(actorLog, `Concurrency limit ${effectiveInput.concurrency} reached. Waiting for a slot.`);
             await Promise.race(Array.from(activeWorkers)).catch(e => (actorLog.warning || actorLog.warn).call(actorLog, `Error during Promise.race (worker slot wait): ${e.message}`));
         }
         const promise = processJob(job).catch(e => {
