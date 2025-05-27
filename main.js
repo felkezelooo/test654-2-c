@@ -20,29 +20,27 @@ async function sleep(ms) {
 }
 
 function getSafeLogger(loggerInstance) {
-    const baseConsoleLogger = {
+    const defaultLogger = {
         info: (msg, data) => console.log(`INFO: ${msg}`, data || ''),
         warn: (msg, data) => console.warn(`WARN: ${msg}`, data || ''),
         error: (msg, data) => console.error(`ERROR: ${msg}`, data || ''),
         debug: (msg, data) => console.log(`DEBUG: ${msg}`, data || ''),
+        child: function(childOpts) { 
+            const newPrefix = childOpts && childOpts.prefix ? (this.prefix || '') + childOpts.prefix : (this.prefix || '');
+            const currentLogger = this;
+            return {
+                ...currentLogger,
+                prefix: newPrefix,
+                info: (m, d) => console.log(`INFO: ${newPrefix}${m}`, d || ''),
+                warn: (m, d) => console.warn(`WARN: ${newPrefix}${m}`, d || ''),
+                error: (m, d) => console.error(`ERROR: ${newPrefix}${m}`, d || ''),
+                debug: (m, d) => console.log(`DEBUG: ${newPrefix}${m}`, d || ''),
+                exception: (e, m, d) => console.error(`EXCEPTION: ${newPrefix}${m}`, e, d || ''),
+            };
+        },
         exception: (e, msg, data) => console.error(`EXCEPTION: ${msg}`, e, data || ''),
     };
 
-    const createChild = function(parentLogger, childOpts) {
-        const parentPrefix = parentLogger.prefix || '';
-        const newPrefix = childOpts && childOpts.prefix ? parentPrefix + childOpts.prefix : parentPrefix;
-        return {
-            info: (m, d) => parentLogger.info(`${newPrefix}${m}`, d),
-            warn: (m, d) => parentLogger.warn(`${newPrefix}${m}`, d),
-            error: (m, d) => parentLogger.error(`${newPrefix}${m}`, d),
-            debug: (m, d) => parentLogger.debug(`${newPrefix}${m}`, d),
-            exception: (e, m, d) => parentLogger.exception(e, `${newPrefix}${m}`, d),
-            child: function(opts) { return createChild(this, opts); }, // `this` refers to the child logger itself
-            prefix: newPrefix // Store the prefix for further children if any
-        };
-    };
-    
-    // Check if the passed loggerInstance has all required methods
     if (loggerInstance && 
         typeof loggerInstance.info === 'function' &&
         typeof loggerInstance.warn === 'function' &&
@@ -50,17 +48,11 @@ function getSafeLogger(loggerInstance) {
         typeof loggerInstance.debug === 'function' &&
         typeof loggerInstance.child === 'function' &&
         typeof loggerInstance.exception === 'function') {
-        return loggerInstance; // Apify logger is fine, use it
+        return loggerInstance;
     }
-    
-    // This console.error will use the basic console because loggerInstance is faulty or undefined
-    console.error("APIFY LOGGER WAS NOT AVAILABLE OR INCOMPLETE, FALLING BACK TO CONSOLE-BASED LOGGER.");
-    return { // Return a new object based on baseConsoleLogger that has a working child method
-        ...baseConsoleLogger,
-        child: function(childOpts) { return createChild(baseConsoleLogger, childOpts); } // Initial child from base
-    };
+    console.error("APIFY LOGGER WAS NOT AVAILABLE OR INCOMPLETE, FALLING BACK TO CONSOLE.");
+    return defaultLogger;
 }
-
 
 function extractVideoIdFromUrl(url, loggerToUse) {
     const safeLogger = getSafeLogger(loggerToUse);
@@ -400,9 +392,9 @@ class YouTubeViewWorker {
     }
 
     async ensureVideoPlaying(playButtonSelectors) { 
-        const logFn = (msg, level = 'info') => this.logger[level](msg); // Use this.logger
+        const logFn = (msg, level = 'info') => this.logger[level](msg);
         logFn('Ensuring video is playing (refined)...');
-        for (let attempt = 0; attempt < 4; attempt++) {
+        for (let attempt = 0; attempt < 4; attempt++) { 
             if (this.killed || this.page.isClosed()) return false;
             try {
                 await this.page.evaluate(() => {
@@ -418,9 +410,7 @@ class YouTubeViewWorker {
                     logFn(`Video is playing after JS play() attempt ${attempt + 1}.`);
                     return true;
                 }
-            } catch (e) {
-                logFn(`JS play() evaluation error: ${e.message.split('\n')[0]}`, 'debug');
-            }
+            } catch (e) { logFn(`JS play() eval error: ${e.message.split('\n')[0]}`, 'debug'); }
             
             logFn(`Video still paused (attempt ${attempt + 1}), trying to click play buttons/player.`);
             for (const selector of playButtonSelectors) {
@@ -450,9 +440,7 @@ class YouTubeViewWorker {
                         }
                         break; 
                     }
-                } catch (e) {
-                    logFn(`Failed to click player area ('${playerSelector}'): ${e.message.split('\n')[0]}`, 'debug');
-                }
+                } catch (e) { logFn(`Failed to click player area ('${playerSelector}'): ${e.message.split('\n')[0]}`, 'debug'); }
             }
             if (attempt < 3) await sleep(1000 + attempt * 500);
         }
@@ -473,6 +461,7 @@ class YouTubeViewWorker {
         const maxOverallWatchDurationMs = this.effectiveInput.timeout * 1000 * 0.95; 
         const checkIntervalMs = 5000; 
         let currentActualVideoTime = 0;
+        let consecutiveStallChecks = 0;
 
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
@@ -487,7 +476,12 @@ class YouTubeViewWorker {
             try {
                 videoState = await this.page.evaluate(() => { 
                     const v = document.querySelector('video.html5-main-video'); 
-                    return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState } : null; 
+                    if (!v) return { currentTime: 0, paused: true, ended: true, readyState: 0, networkState: 3, error: null };
+                    return { 
+                        ct: v.currentTime, p: v.paused, e: v.ended, 
+                        rs: v.readyState, ns: v.networkState, 
+                        error: v.error ? { code: v.error.code, message: v.error.message } : null 
+                    }; 
                 });
                 if (!videoState) {
                     this.logger.warn('Video element not found in evaluate during watch loop. Trying to recover.');
@@ -498,33 +492,53 @@ class YouTubeViewWorker {
                     continue;
                 }
                 currentActualVideoTime = videoState.ct || 0;
-                if (videoState.rs < 2 && currentActualVideoTime < 1 && (Date.now() - overallWatchStartTime > 30000) ) {
-                    this.logger.warn('Video stuck at start (readyState < 2) after 30s.');
+                this.logger.debug(`VidState: time=${videoState.ct?.toFixed(1)}, paused=${videoState.p}, ended=${videoState.e}, readyState=${videoState.rs}, netState=${videoState.ns}, error=${videoState.error?.code}`);
+
+                if (videoState.error) {
+                    this.logger.error(`Video player error: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Ending watch.`);
+                    throw new Error(`Video player error: ${videoState.error.message} (Code: ${videoState.error.code})`);
+                }
+
+                if (videoState.rs < 2 && currentActualVideoTime < 1 && (Date.now() - overallWatchStartTime > 25000) ) {
+                    this.logger.warn('Video potentially stuck at start (readyState < 2) after 25s.');
+                    consecutiveStallChecks++;
+                    if (consecutiveStallChecks > 3) {
+                        this.logger.error('Video stalled for too long. Aborting watch for this video.');
+                        throw new Error('Video stalled at start for too long.');
+                    }
+                } else {
+                    consecutiveStallChecks = 0;
                 }
             } catch (e) { 
-                this.logger.warn(`Video state error: ${e.message.split('\n')[0]}`); 
-                if (e.message.includes('Target closed')) throw e; 
-                continue; 
+                this.logger.warn(`Video state eval/check error: ${e.message.split('\n')[0]}`); 
+                if (e.message.includes('Target closed') || e.message.includes('Video stalled')) throw e; 
+                await sleep(checkIntervalMs); continue; 
             }
             
             this.lastReportedVideoTimeSeconds = currentActualVideoTime;
-            this.logger.debug(`VidTime: ${currentActualVideoTime.toFixed(1)}s. Paused: ${videoState.p}. Ended: ${videoState.e}. ReadyState: ${videoState.rs}`);
 
             if (videoState.p && !videoState.e && currentActualVideoTime < targetVideoPlayTimeSeconds) {
                 this.logger.info('Video paused, ensuring play.');
-                await this.ensureVideoPlaying(
+                const played = await this.ensureVideoPlaying(
                     ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
                 );
+                if (!played) {
+                    this.logger.warn('Failed to resume paused video after multiple attempts in ensureVideoPlaying.');
+                }
             }
             
-            if (videoState.e) { this.logger.info('Video ended.'); break; }
+            if (videoState.e) { this.logger.info('Video playback ended.'); break; }
             if (currentActualVideoTime >= targetVideoPlayTimeSeconds) { 
                 this.logger.info(`Target watch time reached. Actual: ${currentActualVideoTime.toFixed(1)}s`); break; 
             }
             
-            if (Math.floor((Date.now() - overallWatchStartTime) / 1000) % 30 < 5 ) {
-                 await this.page.mouse.move(random(100,500),random(100,300),{steps:random(3,7)}).catch(()=>{}); 
-                 this.logger.debug('Simulated mouse move.');
+            if (Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs) % 4 === 0 ) {
+                 try {
+                    await this.page.locator('video.html5-main-video').hover({timeout: 500});
+                    await sleep(100 + random(100));
+                    await this.page.mouse.move(random(100,500),random(100,300),{steps:random(3,7)}); 
+                    this.logger.debug('Simulated mouse hover and move.');
+                 } catch(e) {this.logger.debug("Minor interaction simulation error, ignoring.");}
             }
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
