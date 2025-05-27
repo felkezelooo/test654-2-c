@@ -25,20 +25,21 @@ function getSafeLogger(loggerInstance) {
     const baseConsoleLogger = {
         info: (msg, data) => console.log(`CONSOLE_INFO: ${msg || ''}`, data || ''),
         warn: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''),
+        warning: (msg, data) => console.warn(`CONSOLE_WARN: ${msg || ''}`, data || ''), // Alias
         error: (msg, data) => console.error(`CONSOLE_ERROR: ${msg || ''}`, data || ''),
         debug: (msg, data) => console.log(`CONSOLE_DEBUG: ${msg || ''}`, data || ''),
         exception: (e, msg, data) => console.error(`CONSOLE_EXCEPTION: ${msg || ''}`, e, data || ''),
         child: function(childOpts) {
             const newPrefix = (this.prefix || 'FALLBACK_CHILD') + (childOpts && childOpts.prefix ? childOpts.prefix : '');
-            const childConsoleLogger = {};
+            const childConsoleLogger = { prefix: newPrefix };
             for (const key in this) {
-                if (typeof this[key] === 'function' && key !== 'child') {
+                if (typeof this[key] === 'function' && key !== 'child' && key !== 'prefix') {
                     childConsoleLogger[key] = (m, d) => this[key](`${newPrefix}${m}`, d);
-                } else if (key !== 'child') {
+                } else if (key !== 'child' && key !== 'prefix') {
                     childConsoleLogger[key] = this[key];
                 }
             }
-            childConsoleLogger.prefix = newPrefix;
+            // Ensure the created child also has a child method that creates further prefixed loggers
             childConsoleLogger.child = function(opts) { return baseConsoleLogger.child.call(this, opts); };
             return childConsoleLogger;
         }
@@ -46,10 +47,15 @@ function getSafeLogger(loggerInstance) {
 
     if (loggerInstance &&
         typeof loggerInstance.info === 'function' &&
-        typeof loggerInstance.warn === 'function' &&
+        (typeof loggerInstance.warn === 'function' || typeof loggerInstance.warning === 'function') && // Check for either
         typeof loggerInstance.error === 'function' &&
-        typeof loggerInstance.debug === 'function'
+        typeof loggerInstance.debug === 'function' &&
+        typeof loggerInstance.child === 'function' // Apify loggers should have .child
     ) {
+        // If .warn is missing but .warning exists, create .warn alias
+        if (typeof loggerInstance.warn !== 'function' && typeof loggerInstance.warning === 'function') {
+            loggerInstance.warn = loggerInstance.warning;
+        }
         return loggerInstance;
     }
 
@@ -242,12 +248,16 @@ class YouTubeViewWorker {
         this.id = uuidv4();
         const workerPrefix = `WKR-${this.id.substring(0,6)}: `;
 
+        // Directly use the passed baseLogger to create a child for this worker.
+        // It's assumed baseLogger IS a valid Apify logger (specifically, jobLogger) by this point.
         if (baseLogger && typeof baseLogger.child === 'function') {
             this.logger = baseLogger.child({ prefix: workerPrefix });
-            if (this.logger && typeof this.logger.info === 'function' && typeof this.logger.warn === 'function') {
-                 console.log(`WORKER_CONSTRUCTOR_DEBUG for ${this.id.substring(0,6)}: this.logger seems valid with .info and .warn after baseLogger.child().`);
+            // Immediately test if this new child logger has the methods we need
+            if (this.logger && typeof this.logger.info === 'function' && (typeof this.logger.warn === 'function' || typeof this.logger.warning === 'function')) {
+                 // Use console.log for this meta-log to avoid circular dependency if this.logger is bad, and to ensure it prints
+                 console.log(`WORKER_CONSTRUCTOR_DEBUG for ${this.id.substring(0,6)}: this.logger seems valid with .info and .warn/warning after baseLogger.child().`);
             } else {
-                console.error(`WORKER_CONSTRUCTOR_ERROR for ${this.id.substring(0,6)}: baseLogger.child() did NOT return a logger with .info AND .warn. This is unexpected. Falling back to created fallback logger.`);
+                console.error(`WORKER_CONSTRUCTOR_ERROR for ${this.id.substring(0,6)}: baseLogger.child() did NOT return a logger with .info AND .warn/warning. This is unexpected. Falling back to created fallback logger.`);
                 this.logger = this.createFallbackLogger(workerPrefix);
             }
         } else {
@@ -269,12 +279,12 @@ class YouTubeViewWorker {
         return {
             info: (m, d) => console.log(`INFO ${prefix}${m}`, d || ''),
             warn: (m, d) => console.warn(`WARN ${prefix}${m}`, d || ''),
+            warning: (m, d) => console.warn(`WARN ${prefix}${m}`, d || ''), // Add alias for warning
             error: (m, d) => console.error(`ERROR ${prefix}${m}`, d || ''),
             debug: (m, d) => console.log(`DEBUG ${prefix}${m}`, d || ''),
             child: function() { console.warn(`WARN ${prefix}Child method called on fallback logger.`); return this; }
         };
     }
-
 
     async startWorker() {
         this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
@@ -442,7 +452,17 @@ class YouTubeViewWorker {
     }
 
     async ensureVideoPlaying(playButtonSelectors) {
-        const logFn = (msg, level = 'info') => this.logger[level](msg);
+        const logFn = (msg, level = 'info') => {
+            // Defensive check for logger methods
+            if (this.logger && typeof this.logger[level] === 'function') {
+                this.logger[level](msg);
+            } else if (this.logger && level === 'warn' && typeof this.logger.warning === 'function') { // Apify specific alias
+                this.logger.warning(msg);
+            }
+            else {
+                console.log(`[EnsureVidPlayFallback/${level}](${this.id.substring(0,6)}): ${msg}`);
+            }
+        };
         logFn('Ensuring video is playing (v4.1)...');
 
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -542,9 +562,9 @@ class YouTubeViewWorker {
 
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
-            if (this.page.isClosed()) { this.logger.warn('Page closed during watch.'); break; }
+            if (this.page.isClosed()) { this.logger.warn('Page closed during watch.'); break; } // Should use .warning if available
             if (Date.now() - overallWatchStartTime > maxOverallWatchDurationMs) {
-                this.logger.warn('Max watch duration for this video exceeded. Ending.'); break;
+                this.logger.warn('Max watch duration for this video exceeded. Ending.'); break; // Should use .warning
             }
 
             const adWasPlayingPreviously = await this.handleAds();
@@ -608,7 +628,26 @@ class YouTubeViewWorker {
 
                 if (isStalledThisCheck) {
                     consecutiveStallChecks++;
+                    // --- Add Screenshot Logic Here ---
+                    if (Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.isAtHome()) {
+                        try {
+                            const stallTime = new Date().toISOString().replace(/:/g, '-');
+                            const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
+                            this.logger.info(`Taking screenshot due to stall: ${screenshotKey}`);
+                            const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
+                            if (Actor.setValue && typeof Actor.setValue === 'function') {
+                                await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
+                                this.logger.info(`Screenshot saved: ${screenshotKey}`);
+                            } else {
+                                this.logger.warn("Actor.setValue is not available to save screenshot.");
+                            }
+                        } catch (screenshotError) {
+                            this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`);
+                        }
+                    }
+                    // --- End Screenshot Logic ---
                 }
+
 
                 if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
                     if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
@@ -692,11 +731,11 @@ class YouTubeViewWorker {
 
             if (Math.floor((Date.now() - overallWatchStartTime) / (checkIntervalMs * 4)) > Math.floor(((Date.now() - overallWatchStartTime - checkIntervalMs)) / (checkIntervalMs * 4)) ) {
                  try {
-                    await this.page.locator('body').hover({timeout: 500});
+                    await this.page.locator('video.html5-main-video').hover({timeout: 1000}); // Increased timeout
                     await sleep(100 + random(100));
                     await this.page.mouse.move(random(100,500),random(100,300),{steps:random(3,7)});
                     this.logger.debug('Simulated mouse hover and move.');
-                 } catch(e) {this.logger.debug("Minor interaction simulation error, ignoring.");}
+                 } catch(e) {this.logger.debug(`Minor interaction simulation error: ${e.message.split('\n')[0]}. Ignoring.`);} // Log actual error
             }
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
@@ -734,7 +773,7 @@ async function actorMainLogic() {
 
         if (Actor.log && typeof Actor.log.info === 'function') {
             actorLog = Actor.log;
-            console.log('INFO: Logger obtained successfully via standard Actor.log. Testing it...'); // Use console.log for this meta-log
+            console.log('INFO: Logger obtained successfully via standard Actor.log. Testing it...');
             actorLog.info('DEBUG: Standard Actor.log test successful.');
         } else {
             console.warn('DEBUG: Standard Actor.log was undefined or invalid. Dumping Actor object:');
@@ -742,7 +781,7 @@ async function actorMainLogic() {
 
             if (Actor._instance && Actor._instance.apifyClient && Actor._instance.apifyClient.logger && typeof Actor._instance.apifyClient.logger.info === 'function') {
                 actorLog = Actor._instance.apifyClient.logger;
-                console.log('INFO: Successfully obtained logger from Actor._instance.apifyClient.logger. Testing it...'); // Use console.log for this meta-log
+                console.log('INFO: Successfully obtained logger from Actor._instance.apifyClient.logger. Testing it...');
                 actorLog.info('DEBUG: Logger obtained via Actor._instance.apifyClient.logger and tested.');
             } else {
                 console.error('CRITICAL DEBUG: Could not obtain logger from Actor.log OR Actor._instance.apifyClient.logger.');
@@ -769,10 +808,10 @@ async function actorMainLogic() {
 
     if (!actorLog || typeof actorLog.info !== 'function') {
         console.error('CRITICAL DEBUG: actorLog is STILL UNDEFINED or not a valid logger after all attempts!');
-        const fallbackLogger = getSafeLogger(undefined); // getSafeLogger is defined globally
+        const fallbackLogger = getSafeLogger(undefined);
         fallbackLogger.error("actorMainLogic: Using fallback logger because all attempts to get Apify logger failed (final check).");
 
-        if (typeof Actor.fail === 'function') { // Check static fail method
+        if (typeof Actor.fail === 'function') {
             await Actor.fail("Apify logger could not be initialized (final check).");
         } else {
             console.error("CRITICAL: Actor.fail is not available. Exiting.");
@@ -907,7 +946,7 @@ async function actorMainLogic() {
                     jobLogger.error(`Failed to get new Apify proxy URL: ${proxyError.message}`);
                     proxyUrlString = null; proxyInfoForLog = 'ProxyAcquisitionFailed';
                 }
-            } else { jobLogger.warn(`Proxies enabled but no configuration found.`); }
+            } else { jobLogger.warn(`Proxies enabled but no configuration found.`); } // Corrected to jobLogger
         }
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
@@ -918,7 +957,7 @@ async function actorMainLogic() {
                 try {
                     const p = new URL(proxyUrlString);
                     searchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
-                } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
+                } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); } // Corrected to jobLogger
             }
             try {
                 const searchUserAgent = userAgentStringsForSearch[random(userAgentStringsForSearch.length-1)];
@@ -984,7 +1023,7 @@ async function actorMainLogic() {
                 const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s.`;
                 jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
                 overallResults.failedJobs++;
-                jobLogger.warn(message); // This is where the previous error occurred.
+                jobLogger.warning(message); // CORRECTED to .warning
             }
 
         } catch (error) {
@@ -1003,7 +1042,7 @@ async function actorMainLogic() {
     const runPromises = [];
     for (const job of jobs) {
         if (activeWorkers.size >= effectiveInput.concurrency) {
-            await Promise.race(Array.from(activeWorkers)).catch(e => actorLog.warn(`Error during Promise.race (worker slot wait): ${e.message}`));
+            await Promise.race(Array.from(activeWorkers)).catch(e => actorLog.warn(`Error during Promise.race (worker slot wait): ${e.message}`)); // Corrected to actorLog.warning
         }
         const promise = processJob(job).catch(e => {
             actorLog.error(`Unhandled error directly from processJob promise for ${job.videoId}: ${e.message}`);
