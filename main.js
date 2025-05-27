@@ -1,11 +1,18 @@
 const Apify = require('apify');
-const { Actor } = Apify;
+const { Actor } = Apify; // Actor might already be global on Apify platform
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { to } = require('await-to-js');
+const { to } = require('await-to-js'); // Not used extensively, but kept
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
+
+// MediaError numeric codes (for reference in comments)
+// const MEDIA_ERR_ABORTED = 1;
+// const MEDIA_ERR_NETWORK = 2;
+// const MEDIA_ERR_DECODE = 3;
+// const MEDIA_ERR_SRC_NOT_SUPPORTED = 4;
+
 
 try {
     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
@@ -76,7 +83,7 @@ function extractVideoIdFromUrl(url, logger) {
             const pathParts = urlObj.pathname.split('/');
             if (urlObj.hostname === 'youtu.be' && pathParts.length > 1 && pathParts[1].length === 11) return pathParts[1];
             if (pathParts.length > 2 && (pathParts[1] === 'shorts' || pathParts[1] === 'embed') && pathParts[2].length === 11) return pathParts[2];
-            if (pathParts.length > 1 && pathParts[1].length === 11 && !vParam) return pathParts[1];
+            if (pathParts.length > 1 && pathParts[1].length === 11 && !vParam) return pathParts[1]; // Handles /watch/VIDEOID format
         }
     } catch (error) {
         safeLogger.error(`Error extracting video ID from URL ${url}: ${error.message}`);
@@ -100,10 +107,12 @@ async function handleYouTubeConsent(page, logger) {
         'ytd-button-renderer:has-text("Accept all")', 'tp-yt-paper-button:has-text("ACCEPT ALL")',
         '#introAgreeButton',
     ];
+    // Increased timeout for consent button visibility
+    const consentVisibilityTimeout = 10000; // from 7000
     for (const selector of consentButtonSelectors) {
         try {
             const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 7000 })) {
+            if (await button.isVisible({ timeout: consentVisibilityTimeout })) {
                 safeLogger.info(`Consent button found: "${selector}". Clicking.`);
                 await button.click({ timeout: 5000, force: true });
                 await page.waitForTimeout(1500 + random(500, 1500));
@@ -135,22 +144,46 @@ const ANTI_DETECTION_ARGS = [
     '--ignore-certificate-errors',
 ];
 
-async function applyAntiDetectionScripts(pageOrContext, logger) {
+async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintConfig) {
     const safeLogger = getSafeLogger(logger);
-    const scriptToInject = () => {
+    const {
+        locale, // e.g., 'en-GB'
+        timezoneId, // e.g., 'Europe/London' (Used to calculate offset)
+        webGLVendor, // e.g., 'Google Inc. (NVIDIA)'
+        webGLRenderer, // e.g., 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1070 Direct3D11 vs_5_0 ps_5_0, D3D11)'
+        // userAgent is applied at context level
+    } = fingerprintConfig;
+
+    let timezoneOffsetMinutes;
+    // Simplified timezone offset calculation. For precise DST, a library like moment-timezone would be needed.
+    // These are standard time offsets, not DST adjusted.
+    if (timezoneId === 'Europe/London') timezoneOffsetMinutes = 0; // GMT
+    else if (timezoneId === 'Europe/Budapest') timezoneOffsetMinutes = -60; // CET (UTC+1)
+    else if (timezoneId === 'America/New_York') timezoneOffsetMinutes = 300; // EST (UTC-5)
+    else timezoneOffsetMinutes = 300; // Default to UTC-5 if not specified
+
+    const scriptToInject = (dynamicLocale, dynamicTimezoneOffsetMinutes, dynamicWebGLVendor, dynamicWebGLRenderer) => {
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
-        try {
+
+        // Ensure dynamicLocale is used and split correctly
+        const langBase = dynamicLocale.split('-')[0];
+        const languagesArray = dynamicLocale.includes('-') ? [dynamicLocale, langBase] : [dynamicLocale];
+        Object.defineProperty(navigator, 'languages', { get: () => languagesArray });
+        Object.defineProperty(navigator, 'language', { get: () => dynamicLocale });
+
+        try { // WebGL
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                // UNMASKED_VENDOR_WEBGL (37445) and UNMASKED_RENDERER_WEBGL (37446)
+                if (parameter === 37445) return dynamicWebGLVendor;
+                if (parameter === 37446) return dynamicWebGLRenderer;
+                // Fallback for older WebGL versions or specific cases if needed
                 if (this.canvas && this.canvas.id === 'webgl-fingerprint-canvas') return originalGetParameter.apply(this, arguments);
-                if (parameter === 37445) return 'Google Inc. (Intel)';
-                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
                 return originalGetParameter.apply(this, arguments);
             };
         } catch (e) { console.debug('[AntiDetectInPage] Failed WebGL spoof:', e.message); }
-        try {
+
+        try { // Canvas - Basic noise, stealth plugin might do more.
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
                 if (this.id === 'canvas-fingerprint-element') return originalToDataURL.apply(this, arguments);
@@ -170,11 +203,13 @@ async function applyAntiDetectionScripts(pageOrContext, logger) {
                 return originalToDataURL.apply(this, arguments);
             };
         } catch (e) { console.debug('[AntiDetectInPage] Failed Canvas spoof:', e.message); }
+
         if (navigator.permissions && typeof navigator.permissions.query === 'function') {
             const originalPermissionsQuery = navigator.permissions.query;
             navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
         }
-        if (window.screen) {
+
+        if (window.screen) { // Hardcoded, but common. Stealth might adjust.
             try {
                 Object.defineProperty(window.screen, 'availWidth', { get: () => 1920, configurable: true, writable: false });
                 Object.defineProperty(window.screen, 'availHeight', { get: () => 1040, configurable: true, writable: false });
@@ -184,21 +219,37 @@ async function applyAntiDetectionScripts(pageOrContext, logger) {
                 Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true, writable: false });
             } catch (e) { console.debug('[AntiDetectInPage] Failed screen spoof:', e.message); }
          }
-        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { console.debug('[AntiDetectInPage] Failed timezone spoof:', e.message); }
+
+        try { // Timezone
+            Date.prototype.getTimezoneOffset = function() { return dynamicTimezoneOffsetMinutes; };
+        } catch (e) { console.debug('[AntiDetectInPage] Failed timezone spoof:', e.message); }
+
         if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetectInPage] Failed plugin spoof:', e.message); }
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetectInPage] Failed mimeType spoof:', e.message); }
     };
     try {
         if (pageOrContext.addInitScript) {
-            await pageOrContext.addInitScript(scriptToInject);
-        } else if (pageOrContext.evaluateOnNewDocument) {
-            await pageOrContext.evaluateOnNewDocument(scriptToInject);
+            // Pass arguments to the scriptToInject function
+            await pageOrContext.addInitScript(scriptToInject, {
+                arg1: locale,
+                arg2: timezoneOffsetMinutes,
+                arg3: webGLVendor,
+                arg4: webGLRenderer
+            });
+        } else if (pageOrContext.evaluateOnNewDocument) { // Fallback for older Playwright or different contexts
+             await pageOrContext.evaluateOnNewDocument(scriptToInject, {
+                arg1: locale,
+                arg2: timezoneOffsetMinutes,
+                arg3: webGLVendor,
+                arg4: webGLRenderer
+            });
         }
-        safeLogger.info('Custom anti-detection script applied.');
+        safeLogger.info(`Custom anti-detection script applied with locale: ${locale}, tzOffsetMin: ${timezoneOffsetMinutes}, WebGLVendor: ${webGLVendor.substring(0,30)}, WebGLRenderer: ${webGLRenderer.substring(0,30)}...`);
     } catch (e) {
         safeLogger.error(`Failed to add anti-detection init script: ${e.message}`);
     }
 }
+
 
 async function getVideoDuration(page, logger) {
     const safeLogger = getSafeLogger(logger);
@@ -228,6 +279,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
+        // noWaitAfter: false is generally safer, ensuring command completes.
         await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
         safeLogger.info(`Clicked on selector: ${selector}`);
         return true;
@@ -252,7 +304,7 @@ class YouTubeViewWorker {
                 console.error(`WORKER_CONSTRUCTOR_ERROR for ${this.id.substring(0,6)}: baseLogger.child() did NOT return a logger with .info AND .warn/warning. This is unexpected. Falling back to created fallback logger.`);
                 this.logger = this.createFallbackLogger(workerPrefix);
             } else {
-                 console.log(`WORKER_CONSTRUCTOR_DEBUG for ${this.id.substring(0,6)}: this.logger seems valid with .info and .warn/warning after baseLogger.child().`);
+                 // console.log(`WORKER_CONSTRUCTOR_DEBUG for ${this.id.substring(0,6)}: this.logger seems valid with .info and .warn/warning after baseLogger.child().`);
             }
         } else {
             console.error(`WORKER_CONSTRUCTOR_ERROR for ${job.id}: baseLogger is invalid or lacked .child(). Using created fallback logger.`);
@@ -265,37 +317,38 @@ class YouTubeViewWorker {
         this.killed = false;
         this.maxTimeReachedThisView = 0;
         this.browser = null; this.context = null; this.page = null;
-        this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
+        // this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 }; // Replaced by handleAds
         this.lastReportedVideoTimeSeconds = 0;
-        this.lastLoggedVideoTime = 0; // For conditional video playing log
+        this.lastLoggedVideoTime = 0;
         
         this.logger.info('Worker instance constructed.');
     }
 
     createFallbackLogger(prefix) {
-        const self = this;
+        const self = this; // Keep reference to 'this' of YouTubeViewWorker
         return {
             prefix: prefix,
-            info: (m, d) => console.log(`INFO ${this.prefix}${m}`, d || ''),
-            warn: (m, d) => console.warn(`WARN ${this.prefix}${m}`, d || ''),
-            warning: (m, d) => console.warn(`WARN ${this.prefix}${m}`, d || ''),
-            error: (m, d) => console.error(`ERROR ${this.prefix}${m}`, d || ''),
-            debug: (m, d) => console.log(`DEBUG ${this.prefix}${m}`, d || ''),
-            child: function(childOpts) {
+            info: (m, d) => console.log(`INFO ${self.prefix || prefix}${m}`, d || ''),
+            warn: (m, d) => console.warn(`WARN ${self.prefix || prefix}${m}`, d || ''),
+            warning: (m, d) => console.warn(`WARN ${self.prefix || prefix}${m}`, d || ''),
+            error: (m, d) => console.error(`ERROR ${self.prefix || prefix}${m}`, d || ''),
+            debug: (m, d) => console.log(`DEBUG ${self.prefix || prefix}${m}`, d || ''),
+            child: function(childOpts) { // Use 'function' to get its own 'this' if needed, but here we use 'self' from parent.
                 const newPrefix = (this.prefix || '') + (childOpts && childOpts.prefix ? childOpts.prefix : '');
-                return self.createFallbackLogger(newPrefix);
+                return self.createFallbackLogger(newPrefix); // Use self to ensure it calls the worker's createFallbackLogger
             }
         };
     }
 
     async startWorker() {
         this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
-        const userAgentStrings = [
+        const userAgentStrings = [ // Kept as is, but for true profile matching, UA should also inform WebGL choice
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0'
         ];
         const selectedUserAgent = userAgentStrings[random(userAgentStrings.length - 1)];
+        
         const launchOptions = {
             headless: this.effectiveInput.headless,
             args: [...ANTI_DETECTION_ARGS, `--window-size=${1280 + random(0, 640)},${720 + random(0, 360)}`],
@@ -318,30 +371,67 @@ class YouTubeViewWorker {
         this.browser = await chromium.launch(launchOptions);
         this.logger.info('Browser launched with playwright-extra.');
 
-        let contextLocale = 'en-US';
-        let contextTimezone = 'America/New_York';
+        // --- Fingerprint Configuration ---
+        let fingerprintConfig = {
+            locale: 'en-US', // Default
+            timezoneId: 'America/New_York', // Default
+            webGLVendor: 'Google Inc. (Intel)', // Default
+            webGLRenderer: 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)', // Default
+            userAgent: selectedUserAgent,
+            proxyCountry: this.effectiveInput.proxyCountry
+        };
+
+        // Example: More realistic fingerprinting based on proxy country
+        // For a production system, this map should be more extensive and potentially tied to User-Agent specifics.
         if (this.effectiveInput.proxyCountry === 'GB') {
-            contextLocale = 'en-GB';
-            contextTimezone = 'Europe/London';
+            fingerprintConfig.locale = 'en-GB';
+            fingerprintConfig.timezoneId = 'Europe/London';
+            // Example WebGL for a common UK setup (NVIDIA GPU with Chrome on Windows)
+            if (selectedUserAgent.toLowerCase().includes('chrome') && selectedUserAgent.toLowerCase().includes('windows')) {
+                fingerprintConfig.webGLVendor = 'Google Inc. (NVIDIA)';
+                fingerprintConfig.webGLRenderer = 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            } else { // Fallback for other UAs or more generic
+                fingerprintConfig.webGLVendor = 'Google Inc. (Intel)';
+                fingerprintConfig.webGLRenderer = 'ANGLE (Intel, Intel HD Graphics 630, OpenGL 4.5)';
+            }
         } else if (this.effectiveInput.proxyCountry === 'HU') {
-            contextLocale = 'hu-HU';
-            contextTimezone = 'Europe/Budapest';
+            fingerprintConfig.locale = 'hu-HU';
+            fingerprintConfig.timezoneId = 'Europe/Budapest';
+            // Example WebGL for a common HU setup (AMD GPU with Chrome on Windows)
+             if (selectedUserAgent.toLowerCase().includes('chrome') && selectedUserAgent.toLowerCase().includes('windows')) {
+                fingerprintConfig.webGLVendor = 'Google Inc. (AMD)';
+                fingerprintConfig.webGLRenderer = 'ANGLE (AMD, AMD Radeon RX 570 Series Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            } else {
+                fingerprintConfig.webGLVendor = 'Google Inc. (Intel)';
+                fingerprintConfig.webGLRenderer = 'ANGLE (Intel, Intel(R) UHD Graphics, OpenGL 4.6)';
+            }
+        } else if (this.effectiveInput.proxyCountry === 'US') {
+            // Use defaults or vary US-based fingerprints if desired
+            // Example: Could select between Intel, NVIDIA, AMD based on random or UA properties
+             if (selectedUserAgent.toLowerCase().includes('macintosh') && selectedUserAgent.toLowerCase().includes('chrome')) {
+                fingerprintConfig.webGLVendor = 'Google Inc. (Apple)';
+                fingerprintConfig.webGLRenderer = 'ANGLE (Apple, Apple M1, OpenGL 4.1)';
+            }
+            // Default Intel already set
         }
+        this.logger.info(`Fingerprint profile: Locale=${fingerprintConfig.locale}, TZ=${fingerprintConfig.timezoneId}, WebGLVendor=${fingerprintConfig.webGLVendor.substring(0,30)}, WebGLRenderer=${fingerprintConfig.webGLRenderer.substring(0,30)}`);
+        // --- End Fingerprint Configuration ---
+
 
         this.context = await this.browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
-            locale: contextLocale,
-            timezoneId: contextTimezone,
-            javaScriptEnabled: true, userAgent: selectedUserAgent,
-            geolocation: this.effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
+            locale: fingerprintConfig.locale,
+            timezoneId: fingerprintConfig.timezoneId,
+            javaScriptEnabled: true, userAgent: fingerprintConfig.userAgent,
+            geolocation: this.effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } : // Geolocation can also be part of fingerprintConfig
                          this.effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
                          this.effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
             permissions: ['geolocation']
         });
-        this.logger.info(`Browser context created with locale: ${contextLocale}, timezone: ${contextTimezone}`);
+        this.logger.info(`Browser context created with locale: ${fingerprintConfig.locale}, timezone: ${fingerprintConfig.timezoneId}`);
 
         if (this.effectiveInput.customAntiDetection) {
-            await applyAntiDetectionScripts(this.context, this.logger);
+            await applyAntiDetectionScripts(this.context, this.logger, fingerprintConfig);
         }
 
         if (this.job.referer) {
@@ -350,6 +440,14 @@ class YouTubeViewWorker {
         }
         this.page = await this.context.newPage();
         this.logger.info('New page created.');
+        
+        // Optional: Listen to page console errors for more debug info
+        this.page.on('console', msg => {
+            if (msg.type() === 'error' || msg.type() === 'warn') {
+                this.logger.debug(`PAGE_CONSOLE (${msg.type().toUpperCase()}): ${msg.text()}`);
+            }
+        });
+
 
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
         await this.page.goto(this.job.videoUrl, { waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.9 });
@@ -401,7 +499,7 @@ class YouTubeViewWorker {
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Initial attempt to ensure video is playing after setup...');
-        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors);
+        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup');
         if (initialPlaySuccess) {
             this.logger.info('Video seems to be playing after initial setup efforts.');
         } else {
@@ -413,12 +511,12 @@ class YouTubeViewWorker {
     }
 
     async handleAds() {
-        // this.logger.info('Checking for ads...'); // This will be called conditionally from watchVideo
+        // this.logger.info('Checking for ads...'); // Called conditionally
         let adWasPlayingThisCheckCycle = false;
         const adPlayingInitially = await this.page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
 
         if (!adPlayingInitially) {
-            // this.logger.debug('No ad detected at the start of this ad check cycle.'); // Still a bit noisy
+            // this.logger.debug('No ad detected at the start of this ad check cycle.');
             return false;
         }
 
@@ -438,18 +536,23 @@ class YouTubeViewWorker {
                 break;
             }
 
-            const canSkip = await this.page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button').count() > 0;
-            const minSkipTimeMs = (this.effectiveInput.skipAdsAfter[0] || 0) * 1000;
+            const canSkipModern = await this.page.locator('.ytp-ad-skip-button-modern').count() > 0;
+            const canSkipLegacy = await this.page.locator('.ytp-ad-skip-button').count() > 0;
+            const canSkip = canSkipModern || canSkipLegacy;
+            
+            const minSkipTimeMs = (this.effectiveInput.skipAdsAfter[0] || 0) * 1000; // Using the min from the array
+
+            const skipSelector = canSkipModern ? '.ytp-ad-skip-button-modern' : '.ytp-ad-skip-button';
 
             if (this.effectiveInput.autoSkipAds && canSkip) {
                 this.logger.info('AutoSkipAds: Attempting to skip ad.');
-                if (await clickIfExists(this.page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button', 1000, this.logger)) {
+                if (await clickIfExists(this.page, skipSelector, 1000, this.logger)) {
                     await sleep(1500 + random(500));
                     break;
                 }
             } else if (canSkip && (Date.now() - adLoopStartTime >= minSkipTimeMs)) {
                 this.logger.info(`Ad skippable and min watch time met. Attempting skip.`);
-                if (await clickIfExists(this.page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button', 1000, this.logger)) {
+                if (await clickIfExists(this.page, skipSelector, 1000, this.logger)) {
                     await sleep(1500 + random(500));
                     break;
                 }
@@ -464,12 +567,12 @@ class YouTubeViewWorker {
     }
 
 
-    async ensureVideoPlaying(playButtonSelectors) {
+    async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') { // Added attemptType for logging
         const logFn = (msg, level = 'info') => {
             const loggerMethod = this.logger[level] || (level === 'warn' && (this.logger.warning || this.logger.warn)) || this.logger.info;
-            loggerMethod.call(this.logger, msg);
+            loggerMethod.call(this.logger, `[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
-        logFn('Ensuring video is playing (v4.1)...');
+        logFn('Ensuring video is playing (v4.2)...');
 
         for (let attempt = 0; attempt < 3; attempt++) {
             if (this.killed || this.page.isClosed()) return false;
@@ -483,18 +586,33 @@ class YouTubeViewWorker {
             let videoState = await this.page.evaluate(() => {
                 const v = document.querySelector('video.html5-main-video');
                 return v ? { p: v.paused, rs: v.readyState, err: v.error ? {code: v.error.code, message: v.error.message} : null } : { p: true, rs: 0, err: null };
-            }).catch(() => ({ p: true, rs: 0, err: {message: "Eval failed to get video state"} }));
+            }).catch((e) => {
+                logFn(`Eval to get video state failed: ${e.message}`, 'warn');
+                return { p: true, rs: 0, err: {message: "Eval failed to get video state"} };
+            });
 
             if (videoState.err && videoState.err.code) {
-                logFn(`Video element has an error: Code ${videoState.err.code}, Msg: ${videoState.err.message || 'N/A'}`, 'warn');
+                logFn(`Video element has an error: Code ${videoState.err.code || 'N/A'}, Msg: ${videoState.err.message || 'N/A'}. Attempt ${attempt + 1}`, 'warn');
+                // MEDIA_ERR_NETWORK = 2, MEDIA_ERR_DECODE = 3. These might be fatal for the current attempt.
+                if ((videoState.err.code === 2 || videoState.err.code === 3) && attempt > 0) { // More aggressive on later attempts
+                    logFn(`Potentially fatal media error detected (Code: ${videoState.err.code}). Stopping play attempts for this ensureVideoPlaying cycle.`, 'error');
+                    return false;
+                }
             }
 
-            if (!videoState.p && videoState.rs >= 3) {
-                logFn(`Video is already playing (attempt ${attempt + 1} initial check).`);
+            // readyState: 0=HAVE_NOTHING, 1=HAVE_METADATA, 2=HAVE_CURRENT_DATA, 3=HAVE_FUTURE_DATA, 4=HAVE_ENOUGH_DATA
+            if (!videoState.p && videoState.rs >= 3 /* HAVE_FUTURE_DATA */) {
+                logFn(`Video is already playing (attempt ${attempt + 1}).`);
                 return true;
             }
-
+            
             logFn(`Video state (attempt ${attempt + 1}): Paused=${videoState.p}, ReadyState=${videoState.rs}. Trying strategies...`);
+
+            if (videoState.rs < 2 /* HAVE_METADATA */ && attempt > 0) { // If not even metadata is loaded after first try, wait longer
+                logFn(`Video readyState is ${videoState.rs} (less than HAVE_METADATA/HAVE_CURRENT_DATA). Waiting before retry.`, 'debug');
+                await sleep(1500 + attempt * 500);
+            }
+
 
             try {
                 await this.page.evaluate(() => {
@@ -510,34 +628,34 @@ class YouTubeViewWorker {
             } catch (e) { logFn(`JS play() eval error: ${e.message.split('\n')[0]}`, 'debug'); }
 
             for (const selector of playButtonSelectors) {
-                if (await clickIfExists(this.page, selector, 1500, this.logger)) {
+                if (await clickIfExists(this.page, selector, 1500, this.logger)) { // logger passed to clickIfExists
                     logFn(`Clicked potential play button: ${selector}`);
-                    await sleep(1200 + random(300));
+                    await sleep(1200 + random(300)); // Wait for action to take effect
                     videoState = await this.page.evaluate(() => {const v = document.querySelector('video.html5-main-video'); return v ? { p: v.paused, rs: v.readyState } : {p:true, rs:0}; }).catch(()=>({p:true, rs:0}));
                     if (!videoState.p && videoState.rs >=3) { logFn('Video playing after play button click.'); return true;}
                 }
             }
 
-            if (videoState.p) {
+            if (videoState.p) { // If still paused, try clicking the player area
                 const playerLocators = ['video.html5-main-video', '.html5-video-player', '#movie_player'];
                 for (const playerSelector of playerLocators) {
                     try {
                         const playerElement = this.page.locator(playerSelector).first();
                         if (await playerElement.isVisible({timeout: 1000})) {
                             logFn(`Clicking player area ('${playerSelector}').`);
-                            await playerElement.click({ timeout: 1500, force: true });
+                            await playerElement.click({ timeout: 1500, force: true }); // Force true as a last resort for player area
                             await sleep(1200 + random(300));
                             videoState = await this.page.evaluate(() => {const v = document.querySelector('video.html5-main-video'); return v ? { p: v.paused, rs: v.readyState } : {p:true, rs:0}; }).catch(()=>({p:true, rs:0}));
                             if (!videoState.p && videoState.rs >=3) {
                                 logFn(`Video playing after clicking player area ('${playerSelector}').`);
                                 return true;
                             }
-                            break;
+                            break; // Only try one player area click strategy
                         }
                     } catch (e) { logFn(`Player area click ('${playerSelector}') error: ${e.message.split('\n')[0]}`, 'debug'); }
                  }
             }
-            if (attempt < 2) await sleep(1500 + attempt * 500);
+            if (attempt < 2) await sleep(1500 + attempt * 500); // Longer sleep if attempts fail
         }
         logFn('Failed to ensure video is playing after multiple attempts.', 'warn');
         return false;
@@ -558,19 +676,19 @@ class YouTubeViewWorker {
         const checkIntervalMs = 1000; 
 
         let consecutiveStallChecks = 0;
-        const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2;
+        const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2; // As before, or tune
         let recoveryAttemptsThisJob = 0;
-        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 1;
+        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 2; // Increased to allow reload, then navigate away
 
         let lastProgressTimestamp = Date.now();
         let lastKnownGoodVideoTime = 0;
         this.maxTimeReachedThisView = 0;
         let currentActualVideoTime = 0;
-        this.lastLoggedVideoTime = -1; // Initialize for conditional logging
+        this.lastLoggedVideoTime = -1;
 
         let adCheckCooldownMs = 0;
-        const AD_CHECK_INTERVAL_WHEN_NO_AD = 5000; // Check ads every 5s if none found
-        const AD_CHECK_INTERVAL_DURING_AD = 1500; // Check ads more frequently if one is playing
+        const AD_CHECK_INTERVAL_WHEN_NO_AD = 5000;
+        const AD_CHECK_INTERVAL_DURING_AD = 1500;
 
 
         while (!this.killed) {
@@ -587,21 +705,23 @@ class YouTubeViewWorker {
                 const adPlayed = await this.handleAds();
                 if (adPlayed) {
                     adCheckCooldownMs = Date.now() + AD_CHECK_INTERVAL_DURING_AD;
-                    lastProgressTimestamp = Date.now(); // Reset video stall timers
+                    lastProgressTimestamp = Date.now(); // Reset stall timers as ad was playing
                     lastKnownGoodVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(() => lastKnownGoodVideoTime);
                     consecutiveStallChecks = 0;
                     this.logger.info('Ad cycle handled, resetting stall detection and allowing video to buffer/resume.');
-                    await sleep(1000 + random(500)); // Give a moment for main video to resume
+                    await sleep(1000 + random(500)); 
                 } else {
                     adCheckCooldownMs = Date.now() + AD_CHECK_INTERVAL_WHEN_NO_AD;
                 }
             }
             
             let videoState = null;
+            let isStalledThisCheck = false; // Initialize here
+
             try {
                 videoState = await this.page.evaluate(() => {
                     const v = document.querySelector('video.html5-main-video');
-                    if (!v) return { currentTime: 0, paused: true, ended: true, readyState: 0, networkState: 3, error: null };
+                    if (!v) return { currentTime: 0, paused: true, ended: true, readyState: 0, networkState: 3, error: null }; // networkState 3 = NETWORK_NO_SOURCE
                     return {
                         ct: v.currentTime, p: v.paused, e: v.ended,
                         rs: v.readyState, ns: v.networkState,
@@ -609,60 +729,71 @@ class YouTubeViewWorker {
                     };
                 });
                 if (!videoState) {
-                    (this.logger.warn || this.logger.warning).call(this.logger, 'Video element not found in evaluate. Trying to recover.');
+                    (this.logger.warn || this.logger.warning).call(this.logger, 'Video element not found in evaluate. Trying to recover or will stall.');
                     await sleep(2000);
                     if (!(await this.page.locator('video.html5-main-video').count() > 0)) {
                         throw new Error('Video element disappeared definitively.');
                     }
-                    continue;
+                    isStalledThisCheck = true; // Treat as stall if element was temporarily gone
+                 } else {
+                    currentActualVideoTime = videoState.ct || 0;
+                    if (currentActualVideoTime > this.maxTimeReachedThisView) {
+                        this.maxTimeReachedThisView = currentActualVideoTime;
+                    }
+                    
+                    // Logging video state
+                    const videoPlaying = !videoState.p && videoState.rs >= 3 && !videoState.e;
+                    if (videoPlaying) {
+                        if (currentActualVideoTime > this.lastLoggedVideoTime + 4.5 || this.lastLoggedVideoTime < 0) { 
+                            this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns}`);
+                            this.lastLoggedVideoTime = currentActualVideoTime;
+                        } else {
+                            this.logger.debug(`Video playing at ${currentActualVideoTime.toFixed(1)}s`);
+                        }
+                    } else if (videoState.p && !videoState.e) {
+                        this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
+                        this.lastLoggedVideoTime = -1;
+                    } else {
+                         this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}`);
+                    }
+
+                    if (videoState.error && videoState.error.code) {
+                        this.logger.error(`Video player error: Code ${videoState.error.code}, Msg: ${videoState.error.message}.`);
+                        // If MEDIA_ERR_NETWORK (2) and recovery attempts available, treat as stall
+                        if (videoState.error.code === 2 && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                            this.logger.warn("Network error in player (code 2), will trigger recovery.");
+                            isStalledThisCheck = true;
+                        } else {
+                           throw new Error(`Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
+                        }
+                    }
+                    
+                    // Stall detection logic
+                    if (!isStalledThisCheck) { // Only check for stalls if not already flagged by error
+                        if (!videoState.p && videoState.rs >= 2) { // Playing or buffering enough to play
+                            if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) { // 10s no progress
+                                isStalledThisCheck = true;
+                            } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) { // Progress made
+                                lastKnownGoodVideoTime = currentActualVideoTime;
+                                lastProgressTimestamp = Date.now();
+                                consecutiveStallChecks = 0; // Reset stall count on progress
+                            }
+                        } else if (videoState.p) { // If paused, reset stall timer
+                            lastProgressTimestamp = Date.now();
+                        }
+                    }
+
+
+                    if (videoState.rs === 0 && currentActualVideoTime < 5 && (Date.now() - overallWatchStartTime > 20000)) {
+                         (this.logger.warn || this.logger.warning).call(this.logger, `Critical Stall: readyState is 0 (HAVE_NOTHING) and video time < 5s after 20s. CT: ${currentActualVideoTime.toFixed(1)}`);
+                         isStalledThisCheck = true;
+                    }
                  }
 
-                currentActualVideoTime = videoState.ct || 0;
-                if (currentActualVideoTime > this.maxTimeReachedThisView) {
-                    this.maxTimeReachedThisView = currentActualVideoTime;
-                }
-                
-                if (!videoState.p && videoState.rs >= 3 && !videoState.e) {
-                    if (currentActualVideoTime > this.lastLoggedVideoTime + 4.5 || this.lastLoggedVideoTime < 0) { 
-                        this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns}`);
-                        this.lastLoggedVideoTime = currentActualVideoTime;
-                    } else {
-                        this.logger.debug(`Video playing at ${currentActualVideoTime.toFixed(1)}s`);
-                    }
-                } else if (videoState.p && !videoState.e) {
-                    this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
-                    this.lastLoggedVideoTime = -1; // Force next play log
-                } else {
-                     this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}`);
-                }
-
-
-                if (videoState.error && videoState.error.code) {
-                    this.logger.error(`Video player error: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Ending watch.`);
-                    throw new Error(`Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
-                }
-
-                let isStalledThisCheck = false;
-                if (!videoState.p && videoState.rs >= 2) {
-                    if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) { // 10s no progress
-                        isStalledThisCheck = true;
-                    } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) {
-                        lastKnownGoodVideoTime = currentActualVideoTime;
-                        lastProgressTimestamp = Date.now();
-                        consecutiveStallChecks = 0;
-                    }
-                } else if (videoState.p) {
-                    lastProgressTimestamp = Date.now();
-                }
-
-                if (videoState.rs === 0 && currentActualVideoTime < 5 && (Date.now() - overallWatchStartTime > 20000)) {
-                     (this.logger.warn || this.logger.warning).call(this.logger, `Critical Stall: readyState is 0 and video time < 5s after 20s. CurrentTime: ${currentActualVideoTime.toFixed(1)}`);
-                     isStalledThisCheck = true;
-                }
 
                 if (isStalledThisCheck) {
                     consecutiveStallChecks++;
-                    (this.logger.warn || this.logger.warning).call(this.logger, `Playback stalled. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls: ${consecutiveStallChecks}. RS: ${videoState.rs}, NS: ${videoState.ns}`);
+                    (this.logger.warn || this.logger.warning).call(this.logger, `Playback stalled. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}`);
                     
                     if (Actor.isAtHome && typeof Actor.isAtHome === 'function' && Actor.isAtHome()) {
                         try {
@@ -673,12 +804,20 @@ class YouTubeViewWorker {
                             if (Actor.setValue && typeof Actor.setValue === 'function') {
                                 await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
                                 this.logger.info(`Screenshot saved: ${screenshotKey}`);
-                            } else {
-                                (this.logger.warn || this.logger.warning).call(this.logger, "Actor.setValue is not available to save screenshot.");
                             }
-                        } catch (screenshotError) {
-                            this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`);
-                        }
+                        } catch (screenshotError) { this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`); }
+                        
+                        // Attempt to get browser console messages
+                        try {
+                            const browserConsoleMessages = await this.page.evaluate(() => {
+                                if (typeof window.capturedConsoleMessages === 'undefined') window.capturedConsoleMessages = [];
+                                return window.capturedConsoleMessages.slice(-10); // Get last 10, assumes page.on('console') is populating this
+                            });
+                            if (browserConsoleMessages && browserConsoleMessages.length > 0) {
+                                this.logger.warn('Recent browser console messages during stall/error:', browserConsoleMessages);
+                            }
+                        } catch(e) {this.logger.debug("Could not get recent browser console messages via evaluate.");}
+
                     }
                     const somethingWrongLocator = this.page.locator('text=/Something went wrong/i, text=/An error occurred/i, .ytp-error-content');
                     try {
@@ -689,56 +828,87 @@ class YouTubeViewWorker {
 
 
                     if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
-                        if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                            (this.logger.warn || this.logger.warning).call(this.logger, `Stalled. Attempting recovery ${recoveryAttemptsThisJob + 1}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
-                            recoveryAttemptsThisJob++;
-                            consecutiveStallChecks = 0;
-                            
-                            this.logger.info('Attempting page reload for recovery.');
-                            await this.page.reload({ waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.6 });
-                            this.logger.info('Page reloaded. Re-handling consent & playback...');
-                            await handleYouTubeConsent(this.page, this.logger);
-                            await this.ensureVideoPlaying(playButtonSelectors);
-                            
-                            lastKnownGoodVideoTime = 0;
-                            this.maxTimeReachedThisView = 0;
-                            currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
-                            lastKnownGoodVideoTime = currentActualVideoTime;
-                            this.maxTimeReachedThisView = currentActualVideoTime;
-                            lastProgressTimestamp = Date.now();
-                            this.lastLoggedVideoTime = -1; // Force log after reload
-                            this.logger.info(`State after reload and play attempt: CT: ${currentActualVideoTime.toFixed(1)}s`);
-                            continue; 
+                        recoveryAttemptsThisJob++;
+                        consecutiveStallChecks = 0; // Reset for next recovery stage if this one fails
+                        (this.logger.warn || this.logger.warning).call(this.logger, `Stalled. Attempting recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
+                        
+                        let recoveryActionSuccess = false;
+                        if (recoveryAttemptsThisJob === 1) {
+                            this.logger.info('Recovery 1: Attempting page reload.');
+                            await this.page.reload({ waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.6 }).catch(e => {
+                                this.logger.error(`Page reload failed: ${e.message}`); throw e;
+                            });
+                            recoveryActionSuccess = true;
+                        } else if (recoveryAttemptsThisJob === 2) {
+                            this.logger.info('Recovery 2: Attempting navigate to about:blank and back.');
+                            const currentUrl = this.job.videoUrl;
+                            try {
+                                await this.page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 10000 });
+                                await sleep(random(1000, 2000));
+                                await this.page.goto(currentUrl, { waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.6 });
+                                recoveryActionSuccess = true;
+                            } catch (navError) {
+                                this.logger.error(`Error during navigate-away recovery: ${navError.message}`);
+                                throw new Error('Recovery by navigation failed.'); // This will break and fail the job
+                            }
                         } else {
-                            this.logger.error('Video stalled and recovery attempts (reload) exhausted. Failing job.');
-                            throw new Error('Video stalled/player error, recovery reloads exhausted.');
+                            this.logger.error('Video stalled and all recovery attempts exhausted. Failing job.');
+                            throw new Error('Video stalled/player error, all recovery attempts exhausted.');
+                        }
+
+                        if (recoveryActionSuccess) {
+                            this.logger.info('Page re-navigated/reloaded. Re-handling consent & playback...');
+                            await handleYouTubeConsent(this.page, this.logger);
+                            await sleep(random(1000,2500)); // Extra pause after consent/reload
+                            const playSuccess = await this.ensureVideoPlaying(playButtonSelectors, `recovery-${recoveryAttemptsThisJob}`);
+                             if (!playSuccess) {
+                                 this.logger.error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback after action.`);
+                                 // For first recovery, allow it to try the second one. For second, throw.
+                                 if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                                     throw new Error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback.`);
+                                 }
+                                 // If recovery 1 fails to play, it will loop and potentially try recovery 2
+                             } else {
+                                 this.logger.info(`Playback seems to have resumed after recovery ${recoveryAttemptsThisJob}.`);
+                             }
+                            // Reset state for watch loop after recovery action
+                            lastKnownGoodVideoTime = 0; this.maxTimeReachedThisView = 0;
+                            currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
+                            lastKnownGoodVideoTime = currentActualVideoTime; this.maxTimeReachedThisView = currentActualVideoTime;
+                            lastProgressTimestamp = Date.now(); this.lastLoggedVideoTime = -1;
+                            this.logger.info(`State after recovery ${recoveryAttemptsThisJob} action: CT: ${currentActualVideoTime.toFixed(1)}s`);
+                            continue; // Continue the main watch loop
                         }
                     }
+                } else { // No stall this check
+                    consecutiveStallChecks = 0; // Reset if not stalled
                 }
             } catch (e) {
                 if (e.message.includes('Target closed') || e.message.includes('Protocol error')) {
                     (this.logger.warn || this.logger.warning).call(this.logger, `Watch loop error (Target closed/Protocol): ${e.message}`); throw e;
                 }
                  (this.logger.warn || this.logger.warning).call(this.logger, `Video state eval/check error: ${e.message.split('\n')[0]}`);
-                 if (e.message.includes('Unrecoverable video stall') || e.message.includes('recovery reloads exhausted')) throw e;
+                 if (e.message.includes('all recovery attempts exhausted') || e.message.includes('Recovery by navigation failed')) throw e;
+                 // For other errors, try to continue or let stall detection catch it
                  await sleep(checkIntervalMs); continue;
             }
             
-            if (videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
-                await this.ensureVideoPlaying(playButtonSelectors);
+            if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
+                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
             }
             
-            if (videoState.e) { this.logger.info('Video playback naturally ended.'); break; }
+            if (videoState && videoState.e) { this.logger.info('Video playback naturally ended.'); break; }
             if (this.maxTimeReachedThisView >= targetVideoPlayTimeSeconds) {
                 this.logger.info(`Target watch time reached. Max Reached: ${this.maxTimeReachedThisView.toFixed(1)}s`); break;
             }
             
-            // Interaction logic
-            if (loopNumber % 3 === 0) { 
+            // Interaction logic (largely unchanged, ensure it uses this.logger)
+            const interactionRandom = Math.random(); // More randomness for interactions
+            if (loopNumber % 3 === 0 && interactionRandom < 0.7) { // ~70% chance every 3 loops
                  try {
                     const videoElement = this.page.locator('video.html5-main-video').first();
                     if (await videoElement.isVisible({timeout:500})) {
-                        await videoElement.hover({timeout: 1000});
+                        await videoElement.hover({timeout: 1000, force: false}).catch(e => this.logger.debug(`Hover error (non-critical): ${e.message}`));
                         await sleep(100 + random(100));
                         const boundingBox = await videoElement.boundingBox();
                         if (boundingBox) {
@@ -752,36 +922,42 @@ class YouTubeViewWorker {
                     }
                  } catch(e) {this.logger.debug(`Minor interaction simulation error (mouse move): ${e.message.split('\n')[0]}. Ignoring.`);}
             }
-            if (loopNumber % 7 === 0) { 
+             if (loopNumber % 7 === 0 && interactionRandom < 0.5) { // ~50% chance every 7 loops
                 try {
                     const settingsButton = this.page.locator('.ytp-settings-button').first();
                     if (await settingsButton.isVisible({timeout: 300})) {
-                        await settingsButton.hover({timeout: 300});
+                        await settingsButton.hover({timeout: 300, force: false}).catch(e => this.logger.debug(`Settings hover error: ${e.message}`));
                         this.logger.debug('Simulated hover on settings button.');
                         await sleep(100 + random(100));
                         const vp = this.page.viewportSize();
-                        if (vp) await this.page.mouse.move(random(vp.width * 0.1, vp.width * 0.9), random(0, vp.height * 0.1), {steps: 2}); // Move mouse to top part of screen
+                        if (vp) await this.page.mouse.move(random(vp.width * 0.1, vp.width * 0.9), random(0, vp.height * 0.1), {steps: 2});
                     }
                 } catch (e) {this.logger.debug(`Minor settings hover interaction error: ${e.message.split('\n')[0]}`);}
             }
-             if (loopNumber % 11 === 0) { 
+             if (loopNumber % 11 === 0 && interactionRandom < 0.3) { // ~30% chance every 11 loops
                  try {
-                    const videoElementToClick = this.page.locator('video.html5-main-video').first();
+                    const videoElementToClick = this.page.locator('video.html5-main-video').first(); // or #movie_player for broader area
                      if (await videoElementToClick.isVisible({timeout:300})) {
-                        await videoElementToClick.focus().catch(e => this.logger.debug(`Focus error: ${e.message}`)); // Best effort focus
-                        await videoElementToClick.click({timeout: 300, position: {x: random(10,50), y: random(10,50)}, delay: random(50,150) });
+                        await videoElementToClick.focus().catch(e => this.logger.debug(`Focus error: ${e.message}`));
+                        await videoElementToClick.click({timeout: 300, position: {x: random(10,50), y: random(10,50)}, delay: random(50,150), force: false }).catch(e => this.logger.debug(`Minor click error: ${e.message}`));
                         this.logger.debug('Simulated click on video player area.');
                     }
                  } catch(e) {this.logger.debug(`Minor video area click error: ${e.message.split('\n')[0]}`); }
             }
-            if (loopNumber % 13 === 0 && !videoState.p && videoState.rs >=3 && Math.random() < 0.3) { // Occasionally try spacebar if playing (30% chance)
+            if (loopNumber % 13 === 0 && videoState && !videoState.p && videoState.rs >=3 && interactionRandom < 0.2) { // ~20% chance to pause/play via space
                 try {
                     await this.page.locator('body').press('Space');
                     this.logger.debug('Simulated Spacebar press (pause).');
                     await sleep(random(700,1800));
-                    await this.page.locator('body').press('Space');
-                    this.logger.debug('Simulated Spacebar press (play).');
-                    this.lastLoggedVideoTime = -1; // Force log update after interaction
+                    // Re-check state before pressing space again, in case it ended or errored
+                    const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? { p: v.paused, e: v.ended } : { p: true, e: true}; }).catch(()=> ({p:true, e:true}));
+                    if (tempState.p && !tempState.e) { // If it's paused and not ended
+                        await this.page.locator('body').press('Space');
+                        this.logger.debug('Simulated Spacebar press (play).');
+                        this.lastLoggedVideoTime = -1;
+                    } else {
+                        this.logger.debug('Skipped second spacebar press as video was not in a suitable state.');
+                    }
                 } catch(e) {this.logger.debug(`Spacebar press error: ${e.message.split('\n')[0]}`)}
             }
 
@@ -855,7 +1031,7 @@ async function actorMainLogic() {
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic - v1.1 Gemini Updates).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -871,21 +1047,23 @@ async function actorMainLogic() {
         watchTimePercentage: 80, useProxies: true, proxyUrls: [], proxyCountry: 'US', proxyGroups: ['RESIDENTIAL'],
         headless: true,
         concurrency: 1, concurrencyInterval: 5, timeout: 120, maxSecondsAds: 15,
-        skipAdsAfter: ["5", "10"],
-        autoSkipAds: true, stopSpawningOnOverload: true, useAV1: false,
+        skipAdsAfter: ["5", "10"], // Array of strings or numbers
+        autoSkipAds: true, stopSpawningOnOverload: true, // stopSpawning not directly used here, Apify handles concurrency
         customAntiDetection: true,
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
 
+    // Parse skipAdsAfter more robustly
     let tempSkipAds = effectiveInput.skipAdsAfter;
     if (Array.isArray(tempSkipAds) && tempSkipAds.length > 0 && tempSkipAds.every(s => typeof s === 'string' || typeof s === 'number')) {
         const parsedSkipAds = tempSkipAds.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n) && n >= 0);
-        if (parsedSkipAds.length === 1) effectiveInput.skipAdsAfter = [parsedSkipAds[0], parsedSkipAds[0] + 5];
+        if (parsedSkipAds.length === 1) effectiveInput.skipAdsAfter = [parsedSkipAds[0], parsedSkipAds[0] + 5]; // Ensure it's an array of two
         else if (parsedSkipAds.length >= 2) effectiveInput.skipAdsAfter = [parsedSkipAds[0], parsedSkipAds[1]];
-        else effectiveInput.skipAdsAfter = [5, 12];
-    } else {
-        effectiveInput.skipAdsAfter = [5, 12];
+        else effectiveInput.skipAdsAfter = [5, 12]; // Fallback if parsing fails or empty
+    } else { // If not an array or invalid format
+        effectiveInput.skipAdsAfter = [5, 12]; // Default
     }
+     // Allow direct min/max override if provided (as in original logic)
     if (typeof input.skipAdsAfterMinSeconds === 'number' && typeof input.skipAdsAfterMaxSeconds === 'number' &&
         !isNaN(input.skipAdsAfterMinSeconds) && !isNaN(input.skipAdsAfterMaxSeconds) &&
         input.skipAdsAfterMinSeconds >= 0 && input.skipAdsAfterMaxSeconds >=0) {
@@ -894,13 +1072,14 @@ async function actorMainLogic() {
             Math.max(input.skipAdsAfterMinSeconds, input.skipAdsAfterMaxSeconds)
         ];
     }
-    if (effectiveInput.skipAdsAfter[0] > effectiveInput.skipAdsAfter[1]) {
+    if (effectiveInput.skipAdsAfter[0] > effectiveInput.skipAdsAfter[1]) { // Ensure min <= max
         effectiveInput.skipAdsAfter[1] = effectiveInput.skipAdsAfter[0] + 5;
     }
     effectiveInput.maxSecondsAds = Number(effectiveInput.maxSecondsAds);
     if(isNaN(effectiveInput.maxSecondsAds) || effectiveInput.maxSecondsAds < 0) {
-        effectiveInput.maxSecondsAds = 15;
+        effectiveInput.maxSecondsAds = 15; // Default
     }
+
 
     actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, customAntiDetect: effectiveInput.customAntiDetection, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds });
 
@@ -913,7 +1092,9 @@ async function actorMainLogic() {
     let actorProxyConfiguration = null;
     if (effectiveInput.useProxies && !(effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) ) {
         const proxyOpts = { groups: effectiveInput.proxyGroups || ['RESIDENTIAL'] };
-        if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "" && effectiveInput.proxyCountry.toUpperCase() !== "ANY") proxyOpts.countryCode = effectiveInput.proxyCountry;
+        if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "" && effectiveInput.proxyCountry.toUpperCase() !== "ANY") {
+            proxyOpts.countryCode = effectiveInput.proxyCountry;
+        }
         try {
             actorProxyConfiguration = await Actor.createProxyConfiguration(proxyOpts);
             actorLog.info(`Apify Proxy: Country=${proxyOpts.countryCode || 'Any'}, Groups=${(proxyOpts.groups || []).join(', ')}`);
@@ -921,10 +1102,10 @@ async function actorMainLogic() {
     }
 
     const jobs = [];
-    const userAgentStringsForSearch = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+    const userAgentStringsForSearch = [ // Keep a separate, potentially more common list for search
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/118.0'
     ];
 
     for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
@@ -944,7 +1125,7 @@ async function actorMainLogic() {
 
         jobs.push({
             id: uuidv4(), videoUrl: url, videoId, platform: 'youtube',
-            referer: refererUrl, video_info: { duration: 300, isLive: false },
+            referer: refererUrl, video_info: { duration: 300, isLive: false }, // duration will be updated
             watch_time: effectiveInput.watchTimePercentage, jobIndex: i,
             watchType, searchKeywords
         });
@@ -970,68 +1151,99 @@ async function actorMainLogic() {
         if (effectiveInput.useProxies) {
             if (effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) {
                 proxyUrlString = effectiveInput.proxyUrls[job.jobIndex % effectiveInput.proxyUrls.length];
-                proxyInfoForLog = `CustomProxy: ${proxyUrlString.split('@').pop().split(':')[0]}`;
+                proxyInfoForLog = `CustomProxy: ${proxyUrlString.split('@').pop().split(':')[0]}`; // Basic obfuscation
                 jobLogger.info(`Using custom proxy: ${proxyInfoForLog}`);
             } else if (actorProxyConfiguration) {
                 const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`;
                 try {
                     proxyUrlString = await actorProxyConfiguration.newUrl(sessionId);
-                    proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
+                    proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`; // Proxy country from effectiveInput
                      jobLogger.info(`Using Apify proxy: ${proxyInfoForLog}`);
                 } catch (proxyError) {
                     jobLogger.error(`Failed to get new Apify proxy URL: ${proxyError.message}`);
                     proxyUrlString = null; proxyInfoForLog = 'ProxyAcquisitionFailed';
                 }
-            } else { jobLogger.warn(`Proxies enabled but no configuration found.`); }
+            } else { jobLogger.warn(`Proxies enabled but no configuration (Apify or custom list) found.`); }
         }
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             jobLogger.info(`Attempting YouTube search for: "${job.searchKeywords.join(', ')}" to find ID: ${job.videoId}`);
             let searchBrowser = null, searchContext = null, searchPage = null;
             const searchLaunchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] };
-            if(proxyUrlString) {
+            if(proxyUrlString) { // Use the same proxy for search if available
                 try {
                     const p = new URL(proxyUrlString);
                     searchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
-                } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
+                } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct if proxy string invalid.'); }
             }
             try {
                 const searchUserAgent = userAgentStringsForSearch[random(userAgentStringsForSearch.length-1)];
                 searchBrowser = await chromium.launch(searchLaunchOptions);
-                searchContext = await searchBrowser.newContext({ userAgent: searchUserAgent });
-                if (effectiveInput.customAntiDetection) await applyAntiDetectionScripts(searchContext, jobLogger);
+                
+                // For search, a simpler fingerprint might be okay, or reuse the main logic.
+                // Here, just setting UA and basic context.
+                const searchFingerprintConfig = { // Simplified for search
+                    locale: effectiveInput.proxyCountry === 'GB' ? 'en-GB' : effectiveInput.proxyCountry === 'HU' ? 'hu-HU' : 'en-US',
+                    timezoneId: effectiveInput.proxyCountry === 'GB' ? 'Europe/London' : effectiveInput.proxyCountry === 'HU' ? 'Europe/Budapest' : 'America/New_York',
+                    webGLVendor: 'Google Inc. (Intel)', // Generic for search
+                    webGLRenderer: 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)',
+                    userAgent: searchUserAgent,
+                    proxyCountry: effectiveInput.proxyCountry
+                };
+
+                searchContext = await searchBrowser.newContext({ 
+                    userAgent: searchFingerprintConfig.userAgent,
+                    locale: searchFingerprintConfig.locale,
+                    timezoneId: searchFingerprintConfig.timezoneId
+                });
+
+                if (effectiveInput.customAntiDetection) { // Apply anti-detection to search context too
+                    await applyAntiDetectionScripts(searchContext, jobLogger.child({prefix: 'SearchAntiDetect: '}), searchFingerprintConfig);
+                }
 
                 searchPage = await searchContext.newPage();
 
                 const searchQuery = job.searchKeywords[random(job.searchKeywords.length - 1)];
                 const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
                 jobLogger.info(`Navigating to search URL: ${youtubeSearchUrl}`);
-                await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 });
-                await handleYouTubeConsent(searchPage, jobLogger);
+                await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 * 0.8 }); // Shorter timeout for search
+                await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}));
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
+                
+                // Scroll a bit to ensure elements load
+                for(let k=0; k<3; k++) { await searchPage.evaluate(() => window.scrollBy(0, window.innerHeight/2)); await sleep(500 + random(500));}
+
                 const videoLinkElement = searchPage.locator(videoLinkSelector).first();
                 await videoLinkElement.waitFor({ state: 'visible', timeout: 45000 });
 
                 const href = await videoLinkElement.getAttribute('href');
                 if (href) {
-                    const fullVideoUrl = `https://www.youtube.com${href}`;
-                    const currentUrl = searchPage.url();
-                     if (currentUrl.includes(job.videoId) || href.includes(job.videoId)){
+                    const fullVideoUrl = (href.startsWith('http') ? href : `https://www.youtube.com${href}`);
+                    const currentSearchPageUrl = searchPage.url();
+                     // Check if videoId is in the href or title to be more certain
+                    const linkTitle = await videoLinkElement.textContent();
+                    if (href.includes(job.videoId) || (linkTitle && linkTitle.includes(job.videoId))) { // Added title check as a fallback
                         jobLogger.info(`Video found via search: ${fullVideoUrl}. Updating job URL and referer.`);
-                        job.videoUrl = fullVideoUrl;
-                        job.referer = youtubeSearchUrl;
+                        job.videoUrl = fullVideoUrl; // Use the full URL from search
+                        job.referer = currentSearchPageUrl; // Set referer to search results page
                     } else {
-                         jobLogger.warn(`Found video link element but current URL ${currentUrl} or href ${href} does not match video ID ${job.videoId}. Proceeding with original URL.`);
+                         jobLogger.warn(`Found video link element (href: ${href}, title: ${linkTitle}), but ID ${job.videoId} not strongly matched. Proceeding with original/direct URL for safety.`);
                     }
                 } else {
                     jobLogger.warn('Found video link element but href was null. Proceeding with original URL.');
                 }
             } catch (searchError) {
-                jobLogger.error(`YouTube search failed: ${searchError.message}. Falling back to direct URL: ${job.videoUrl}`);
+                jobLogger.error(`YouTube search failed: ${searchError.message.split('\n')[0]}. Falling back to direct URL: ${job.videoUrl}`);
+                 if (Actor.isAtHome()) { // Save screenshot on search fail if local
+                    try {
+                        const ssKey = `SEARCH_FAIL_${job.videoId}_${new Date().toISOString().replace(/:/g, '-')}`;
+                        if (searchPage && !searchPage.isClosed()) await Actor.setValue(ssKey, await searchPage.screenshot(), { contentType: 'image/png' });
+                    } catch (e) { jobLogger.debug(`Failed to save search fail screenshot: ${e.message}`);}
+                 }
             } finally {
-                if (searchPage) await searchPage.close().catch(e => jobLogger.debug(`Search page close error: ${e.message}`));
+                if (searchPage && !searchPage.isClosed()) await searchPage.close().catch(e => jobLogger.debug(`Search page close error: ${e.message}`));
                 if (searchContext) await searchContext.close().catch(e => jobLogger.debug(`Search context close error: ${e.message}`));
                 if (searchBrowser) await searchBrowser.close().catch(e => jobLogger.debug(`Search browser close error: ${e.message}`));
             }
@@ -1041,16 +1253,20 @@ async function actorMainLogic() {
         let jobResultData = {
             jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId,
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
-            watchTypePerformed: job.watchType,
+            watchTypePerformed: job.watchType, // Includes if it was 'search' type
             error: null,
             lastReportedVideoTimeSeconds: 0,
-            targetVideoPlayTimeSeconds: 0
+            targetVideoPlayTimeSeconds: 0, // Will be filled by worker
+            videoDurationSeconds: 0 // Will be filled by worker
         };
 
         try {
             await worker.startWorker();
+            jobResultData.targetVideoPlayTimeSeconds = Math.max(10, (effectiveInput.watchTimePercentage / 100) * worker.job.video_info.duration);
+            jobResultData.videoDurationSeconds = worker.job.video_info.duration;
+
             const watchResult = await worker.watchVideo();
-            Object.assign(jobResultData, watchResult);
+            Object.assign(jobResultData, watchResult); // Overwrites some fields with actuals
 
             if (jobResultData.lastReportedVideoTimeSeconds >= jobResultData.targetVideoPlayTimeSeconds) {
                 jobResultData.status = 'success';
@@ -1068,10 +1284,14 @@ async function actorMainLogic() {
             jobLogger.error(`Job failed with exception: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,7).join(' | ') });
             jobResultData.status = 'failure_exception';
             jobResultData.error = error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,5).join(' | ')}` : '');
-            jobResultData.lastReportedVideoTimeSeconds = worker.maxTimeReachedThisView;
+            jobResultData.lastReportedVideoTimeSeconds = worker.maxTimeReachedThisView; // Ensure this is captured on error
+            if (worker.job && worker.job.video_info && worker.job.video_info.duration) { // Capture these if available
+                 jobResultData.targetVideoPlayTimeSeconds = Math.max(10, (effectiveInput.watchTimePercentage / 100) * worker.job.video_info.duration);
+                 jobResultData.videoDurationSeconds = worker.job.video_info.duration;
+            }
             overallResults.failedJobs++;
         } finally {
-            await worker.kill();
+            await worker.kill(); // Ensure worker resources are always cleaned up
             jobLogger.info(`Finished job. Status: ${jobResultData.status}. Watched: ${(jobResultData.lastReportedVideoTimeSeconds || 0).toFixed(1)}s`);
         }
         overallResults.details.push(jobResultData);
@@ -1080,33 +1300,54 @@ async function actorMainLogic() {
 
     const runPromises = [];
     for (const job of jobs) {
-        if (activeWorkers.size >= effectiveInput.concurrency) {
-            (actorLog.warning || actorLog.warn).call(actorLog, `Concurrency limit ${effectiveInput.concurrency} reached. Waiting for a slot.`);
-            await Promise.race(Array.from(activeWorkers)).catch(e => (actorLog.warning || actorLog.warn).call(actorLog, `Error during Promise.race (worker slot wait): ${e.message}`));
+        // Concurrency management: Wait if max concurrency reached
+        while (activeWorkers.size >= effectiveInput.concurrency) {
+            (actorLog.warning || actorLog.warn).call(actorLog, `Concurrency limit ${effectiveInput.concurrency} reached (active: ${activeWorkers.size}). Waiting for a slot.`);
+            try {
+                 await Promise.race(Array.from(activeWorkers)); // Wait for any worker to finish
+            } catch (e) {
+                 // This catch is for errors from the promises in activeWorkers,
+                 // which should ideally be handled by their own .catch().
+                 // However, if a promise in activeWorkers rejects without its own catch, Promise.race might throw.
+                 actorLog.debug(`Error during Promise.race (worker slot wait), likely already handled by worker's own catch: ${e.message.substring(0,100)}`);
+            }
         }
+
         const promise = processJob(job).catch(e => {
+            // This catch is a safety net for unhandled rejections from processJob itself
             actorLog.error(`Unhandled error directly from processJob promise for ${job.videoId}: ${e.message}`);
-            const errorResult = { jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId, status: 'catastrophic_processJob_failure', error: e.message };
+            const errorResult = { 
+                jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId, 
+                status: 'catastrophic_processJob_failure', 
+                error: e.message  + (e.stack ? ` | STACK: ${e.stack.substring(0,200)}` : '')
+            };
             Actor.pushData(errorResult).catch(pushErr => console.error("Failed to pushData for catastrophic failure:", pushErr));
-            overallResults.failedJobs++;
-            overallResults.details.push(errorResult);
+            overallResults.failedJobs++; // Ensure failed count is updated
+            overallResults.details.push(errorResult); // Add to details
         }).finally(() => {
-            activeWorkers.delete(promise);
+            activeWorkers.delete(promise); // Remove worker from active set when done
+            actorLog.debug(`Worker finished for job ${job.videoId.substring(0,4)}. Active workers: ${activeWorkers.size}`);
         });
-        activeWorkers.add(promise);
-        runPromises.push(promise);
+        activeWorkers.add(promise); // Add new worker to active set
+        runPromises.push(promise); // Keep track of all promises to await at the end
+
         jobCounter++;
-        if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
-            actorLog.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}).`);
+        if (jobCounter < jobs.length && effectiveInput.concurrencyInterval > 0) { // No need to wait if it's the last job
+            actorLog.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}, current job ${jobCounter}/${jobs.length}).`);
             await sleep(effectiveInput.concurrencyInterval * 1000);
         }
     }
+    
+    actorLog.info(`All ${jobs.length} jobs have been dispatched. Waiting for all to complete... Active workers: ${activeWorkers.size}`);
     await Promise.all(runPromises.map(p => p.catch(e => {
-        actorLog.error(`Error caught by Promise.all on worker promise: ${e.message}`);
-        return e;
+        // This catch is for promises that might have already been caught by the individual processJob's catch,
+        // but it's a good final safety net.
+        actorLog.error(`Error caught by final Promise.all on a worker promise (should have been handled earlier): ${e.message}`);
+        return e; // Return the error so Promise.all doesn't break if one fails catastrophically
     })));
 
-    actorLog.info('All jobs processed. Final results:', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }});
+    overallResults.endTime = new Date().toISOString();
+    actorLog.info('All jobs processed. Final results:', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }, duration: (new Date(overallResults.endTime) - new Date(overallResults.startTime))/1000 + 's' });
     await Actor.setValue('OVERALL_RESULTS', overallResults);
     actorLog.info('Actor finished successfully.');
     await Actor.exit();
