@@ -1,14 +1,12 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-// ... other require statements ...
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { to } = require('await-to-js'); // Kept, might be used by other functions later
-const { v4: uuidv4 } = require('uuid'); // Kept, might be used by other functions later
-const { URL } = require('url'); // Kept, might be used by other functions later
+const { to } = require('await-to-js');
+const { v4: uuidv4 } = require('uuid');
+const { URL } = require('url');
 
-// StealthPlugin application (using console.log is fine here before Actor.init)
 try {
     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
     chromium.use(StealthPlugin());
@@ -51,7 +49,7 @@ function getSafeLogger(loggerInstance) {
         typeof loggerInstance.error === 'function' &&
         typeof loggerInstance.debug === 'function' &&
         typeof loggerInstance.exception === 'function' &&
-        typeof loggerInstance.child === 'function') { // Added full checks
+        typeof loggerInstance.child === 'function') {
         return loggerInstance;
     }
     if (!getSafeLogger.hasWarnedOnce) {
@@ -687,65 +685,299 @@ class YouTubeViewWorker {
     }
 }
 
-// --- Main Actor Logic (Simplified for Debugging Logger) ---
+// --- Main Actor Logic (With Deeper Debugging for Actor.log) ---
 async function actorMainLogic() {
     console.log('DEBUG: actorMainLogic started.');
 
     try {
         await Actor.init();
-        console.log('DEBUG: Actor.init() completed.');
+        console.log('DEBUG: Actor.init() completed successfully.');
     } catch (initError) {
         console.error('CRITICAL DEBUG: Actor.init() FAILED:', initError);
         process.exit(1);
     }
 
-    if (Actor.log && typeof Actor.log.info === 'function') {
-        Actor.log.info('DEBUG: Actor.log is VALID immediately after Actor.init()');
-    } else {
-        console.error('CRITICAL DEBUG: Actor.log is UNDEFINED/INVALID immediately after Actor.init()');
-        if (Actor.isAtHome && Actor.fail) {
-             await Actor.fail("Actor.log was not properly initialized by Actor.init().");
+    // DEBUG: Log the entire Actor object to inspect its properties
+    console.log('DEBUG: Dumping Actor object after init:');
+    console.dir(Actor, { depth: 2 }); // Log with some depth to see properties
+
+    // DEBUG: Specifically check for the 'log' property and its type
+    if (Actor.hasOwnProperty('log')) {
+        console.log(`DEBUG: Actor object HAS a property named 'log'. Type: ${typeof Actor.log}`);
+        if (Actor.log && typeof Actor.log.info === 'function') {
+            console.log('DEBUG: Actor.log.info IS a function.');
         } else {
-            console.error("CRITICAL: Actor.fail not available. Exiting.");
-            process.exit(1);
+            console.error('CRITICAL DEBUG: Actor.log.info is NOT a function or Actor.log is null/undefined.');
+            if (Actor.log) {
+                console.log('DEBUG: Properties of Actor.log:');
+                console.dir(Actor.log, { depth: 1 });
+            }
         }
+    } else {
+        console.error('CRITICAL DEBUG: Actor object DOES NOT HAVE a property named "log".');
+    }
+
+    // Assign and use, this will likely still fail if the above checks show issues.
+    const actorLog = Actor.log;
+
+    if (!actorLog || typeof actorLog.info !== 'function') {
+        console.error('CRITICAL DEBUG (after assignment): actorLog is UNDEFINED or not a valid logger!');
+        const fallbackLogger = getSafeLogger(undefined); // getSafeLogger will use console
+        fallbackLogger.error("actorMainLogic: Using fallback logger because Actor.log was invalid after assignment.");
+        await Apify.Actor.fail("Actor.log was not initialized correctly (after assignment)."); // Use Apify.Actor static method
         return;
     }
 
-    const actorLog = Actor.log;
-
-    actorLog.info('ACTOR_MAIN_LOGIC: Logger test successful. Proceeding with minimal logic...');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic).');
 
     const input = await Actor.getInput();
     if (!input) {
-        actorLog.error('No input received.');
-        if (Actor.isAtHome && Actor.fail) await Actor.fail('No input.');
-        else { actorLog.error("Actor.fail not available. No input."); process.exit(1); }
+        actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
+        await Actor.fail('No input provided.');
         return;
     }
-    actorLog.info('Input received (minimal test):', { hasInput: true }); // Log a simple object
+    actorLog.info('ACTOR_MAIN_LOGIC: Actor input received.');
+    actorLog.debug('Raw input object:', input);
 
-    // For this minimal test, we are NOT calling the full job processing logic.
-    // We will just log success and exit.
-    // If you want to restore the full logic, replace the lines below with your
-    // original job processing loop and overallResults handling.
 
-    // Example of how you WOULD use the logger for the original logic:
-    /*
-    const defaultInputFromSchema = { ... };
+    // --- Full original actor logic below, will only run if actorLog is valid ---
+    const defaultInputFromSchema = {
+        videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+        watchTypes: ['direct'], refererUrls: [''], searchKeywordsForEachVideo: ['funny cat videos, cute kittens'],
+        watchTimePercentage: 80, useProxies: true, proxyUrls: [], proxyCountry: 'US', proxyGroups: ['RESIDENTIAL'],
+        headless: true,
+        concurrency: 1, concurrencyInterval: 5, timeout: 120, maxSecondsAds: 15,
+        skipAdsAfter: ["5", "10"],
+        autoSkipAds: true, stopSpawningOnOverload: true, useAV1: false,
+        customAntiDetection: true,
+    };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
-    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length });
-    // ... rest of your original actorMainLogic ...
-    // const processJob = async (job) => {
-    //     const jobLogger = actorLog.child({ prefix: `Job-${job.videoId.substring(0,4)}-${job.id.substring(0,4)}: ` });
-    //     const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlString, jobLogger);
-    //     // ...
-    // };
-    */
 
-    actorLog.info('Actor minimal test completed. Will now exit successfully.');
-    if(Actor.isAtHome && Actor.exit) await Actor.exit("Minimal test completed successfully.");
-    else { actorLog.info("Actor.exit not available. Minimal test complete."); }
+    let tempSkipAds = effectiveInput.skipAdsAfter;
+    if (Array.isArray(tempSkipAds) && tempSkipAds.length > 0 && tempSkipAds.every(s => typeof s === 'string' || typeof s === 'number')) {
+        const parsedSkipAds = tempSkipAds.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n) && n >= 0);
+        if (parsedSkipAds.length === 1) effectiveInput.skipAdsAfter = [parsedSkipAds[0], parsedSkipAds[0] + 5];
+        else if (parsedSkipAds.length >= 2) effectiveInput.skipAdsAfter = [parsedSkipAds[0], parsedSkipAds[1]];
+        else effectiveInput.skipAdsAfter = [5, 12];
+    } else {
+        effectiveInput.skipAdsAfter = [5, 12];
+    }
+    if (typeof input.skipAdsAfterMinSeconds === 'number' && typeof input.skipAdsAfterMaxSeconds === 'number' &&
+        !isNaN(input.skipAdsAfterMinSeconds) && !isNaN(input.skipAdsAfterMaxSeconds) &&
+        input.skipAdsAfterMinSeconds >= 0 && input.skipAdsAfterMaxSeconds >=0) {
+        effectiveInput.skipAdsAfter = [
+            input.skipAdsAfterMinSeconds,
+            Math.max(input.skipAdsAfterMinSeconds, input.skipAdsAfterMaxSeconds)
+        ];
+    }
+    if (effectiveInput.skipAdsAfter[0] > effectiveInput.skipAdsAfter[1]) {
+        effectiveInput.skipAdsAfter[1] = effectiveInput.skipAdsAfter[0] + 5;
+    }
+    effectiveInput.maxSecondsAds = Number(effectiveInput.maxSecondsAds);
+    if(isNaN(effectiveInput.maxSecondsAds) || effectiveInput.maxSecondsAds < 0) {
+        effectiveInput.maxSecondsAds = 15;
+    }
+
+    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, customAntiDetect: effectiveInput.customAntiDetection, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds });
+
+    if (!effectiveInput.videoUrls || effectiveInput.videoUrls.length === 0) {
+        actorLog.error('No videoUrls provided in input.');
+        await Actor.fail('No videoUrls provided in input.');
+        return;
+    }
+
+    let actorProxyConfiguration = null;
+    if (effectiveInput.useProxies && !(effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) ) {
+        const proxyOpts = { groups: effectiveInput.proxyGroups || ['RESIDENTIAL'] };
+        if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "" && effectiveInput.proxyCountry.toUpperCase() !== "ANY") proxyOpts.countryCode = effectiveInput.proxyCountry;
+        try {
+            actorProxyConfiguration = await Actor.createProxyConfiguration(proxyOpts);
+            actorLog.info(`Apify Proxy: Country=${proxyOpts.countryCode || 'Any'}, Groups=${(proxyOpts.groups || []).join(', ')}`);
+        } catch (e) { actorLog.error(`Failed Apify Proxy config: ${e.message}.`); actorProxyConfiguration = null; }
+    }
+
+    const jobs = [];
+    const userAgentStringsForSearch = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
+    ];
+
+    for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
+        const url = effectiveInput.videoUrls[i];
+        const videoId = extractVideoIdFromUrl(url, actorLog);
+        if (!videoId) { actorLog.warn(`Invalid YouTube URL/ID: "${url}". Skipping.`); await Actor.pushData({ url, status: 'error', error: 'Invalid YouTube URL' }); continue; }
+
+        const watchType = (effectiveInput.watchTypes && effectiveInput.watchTypes[i]) || 'direct';
+        const refererUrl = (watchType === 'referer' && effectiveInput.refererUrls && effectiveInput.refererUrls[i] && effectiveInput.refererUrls[i].trim() !== "")
+            ? effectiveInput.refererUrls[i].trim()
+            : null;
+
+        let searchKeywords = [];
+        if (watchType === 'search' && effectiveInput.searchKeywordsForEachVideo && typeof effectiveInput.searchKeywordsForEachVideo[i] === 'string') {
+            searchKeywords = effectiveInput.searchKeywordsForEachVideo[i].split(',').map(kw => kw.trim()).filter(kw => kw.length > 0);
+        }
+
+        jobs.push({
+            id: uuidv4(), videoUrl: url, videoId, platform: 'youtube',
+            referer: refererUrl, video_info: { duration: 300, isLive: false },
+            watch_time: effectiveInput.watchTimePercentage, jobIndex: i,
+            watchType, searchKeywords
+        });
+    }
+
+    if (jobs.length === 0) { actorLog.error('No valid jobs.'); await Actor.fail('No valid jobs.'); return; }
+    actorLog.info(`ACTOR_MAIN_LOGIC: Created ${jobs.length} job(s). Concurrency: ${effectiveInput.concurrency}`);
+
+    const overallResults = { totalJobs: jobs.length, successfulJobs: 0, failedJobs: 0, details: [], startTime: new Date().toISOString() };
+    const activeWorkers = new Set();
+    let jobCounter = 0;
+
+    const processJob = async (job) => {
+        const jobLogger = actorLog.child({ prefix: `Job-${job.videoId.substring(0,4)}-${job.id.substring(0,4)}: ` });
+        jobLogger.info(`Starting job ${job.jobIndex + 1}/${jobs.length}, Type: ${job.watchType}, Referer: ${job.referer || 'None'}`);
+        let proxyUrlString = null;
+        let proxyInfoForLog = 'None';
+
+        if (effectiveInput.useProxies) {
+            if (effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) {
+                proxyUrlString = effectiveInput.proxyUrls[job.jobIndex % effectiveInput.proxyUrls.length];
+                proxyInfoForLog = `CustomProxy: ${proxyUrlString.split('@').pop().split(':')[0]}`;
+                jobLogger.info(`Using custom proxy: ${proxyInfoForLog}`);
+            } else if (actorProxyConfiguration) {
+                const sessionId = `session_${job.id.substring(0, 12).replace(/-/g, '')}`;
+                try {
+                    proxyUrlString = await actorProxyConfiguration.newUrl(sessionId);
+                    proxyInfoForLog = `ApifyProxy (Session: ${sessionId}, Country: ${effectiveInput.proxyCountry || 'Any'})`;
+                     jobLogger.info(`Using Apify proxy: ${proxyInfoForLog}`);
+                } catch (proxyError) {
+                    jobLogger.error(`Failed to get new Apify proxy URL: ${proxyError.message}`);
+                    proxyUrlString = null; proxyInfoForLog = 'ProxyAcquisitionFailed';
+                }
+            } else { jobLogger.warn(`Proxies enabled but no configuration found.`); }
+        }
+
+        if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
+            jobLogger.info(`Attempting YouTube search for: "${job.searchKeywords.join(', ')}" to find ID: ${job.videoId}`);
+            let searchBrowser = null, searchContext = null, searchPage = null;
+            const searchLaunchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] };
+            if(proxyUrlString) {
+                try {
+                    const p = new URL(proxyUrlString);
+                    searchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
+                } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
+            }
+            try {
+                const searchUserAgent = userAgentStringsForSearch[random(userAgentStringsForSearch.length-1)];
+                searchBrowser = await chromium.launch(searchLaunchOptions);
+                searchContext = await searchBrowser.newContext({ userAgent: searchUserAgent });
+                if (effectiveInput.customAntiDetection) await applyAntiDetectionScripts(searchContext, jobLogger);
+
+                searchPage = await searchContext.newPage();
+
+                const searchQuery = job.searchKeywords[random(job.searchKeywords.length - 1)];
+                const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
+                jobLogger.info(`Navigating to search URL: ${youtubeSearchUrl}`);
+                await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 });
+                await handleYouTubeConsent(searchPage, jobLogger);
+
+                const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
+                jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
+                const videoLinkElement = searchPage.locator(videoLinkSelector).first();
+                await videoLinkElement.waitFor({ state: 'visible', timeout: 45000 });
+
+                const href = await videoLinkElement.getAttribute('href');
+                if (href) {
+                    const fullVideoUrl = `https://www.youtube.com${href}`;
+                    const currentUrl = searchPage.url();
+                     if (currentUrl.includes(job.videoId) || href.includes(job.videoId)){
+                        jobLogger.info(`Video found via search: ${fullVideoUrl}. Updating job URL and referer.`);
+                        job.videoUrl = fullVideoUrl;
+                        job.referer = youtubeSearchUrl;
+                    } else {
+                         jobLogger.warn(`Found video link element but current URL ${currentUrl} or href ${href} does not match video ID ${job.videoId}. Proceeding with original URL.`);
+                    }
+                } else {
+                    jobLogger.warn('Found video link element but href was null. Proceeding with original URL.');
+                }
+            } catch (searchError) {
+                jobLogger.error(`YouTube search failed: ${searchError.message}. Falling back to direct URL: ${job.videoUrl}`);
+            } finally {
+                if (searchPage) await searchPage.close().catch(e => jobLogger.debug(`Search page close error: ${e.message}`));
+                if (searchContext) await searchContext.close().catch(e => jobLogger.debug(`Search context close error: ${e.message}`));
+                if (searchBrowser) await searchBrowser.close().catch(e => jobLogger.debug(`Search browser close error: ${e.message}`));
+            }
+        }
+
+        const worker = new YouTubeViewWorker(job, effectiveInput, proxyUrlString, jobLogger);
+        let jobResultData = {
+            jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId,
+            status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
+            watchTypePerformed: job.watchType,
+            error: null
+        };
+
+        try {
+            await worker.startWorker();
+            const watchResult = await worker.watchVideo();
+            Object.assign(jobResultData, watchResult);
+
+            if (jobResultData.lastReportedVideoTimeSeconds >= jobResultData.targetVideoPlayTimeSeconds) {
+                jobResultData.status = 'success';
+                overallResults.successfulJobs++;
+                jobLogger.info(`Job success: Watched ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s / ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s`);
+            } else {
+                jobResultData.status = 'failure_watch_time_not_met';
+                const message = `Target watch time ${jobResultData.targetVideoPlayTimeSeconds.toFixed(1)}s not met. Actual: ${jobResultData.lastReportedVideoTimeSeconds.toFixed(1)}s.`;
+                jobResultData.error = jobResultData.error ? `${jobResultData.error}; ${message}` : message;
+                overallResults.failedJobs++;
+                jobLogger.warn(message);
+            }
+
+        } catch (error) {
+            jobLogger.error(`Job failed with exception: ${error.message}`, { stack: error.stack && error.stack.split('\n').slice(0,5).join(' | ')});
+            jobResultData.status = 'failure_exception';
+            jobResultData.error = error.message + (error.stack ? ` STACK_TRACE_SNIPPET: ${error.stack.split('\n').slice(0,3).join(' | ')}` : '');
+            overallResults.failedJobs++;
+        } finally {
+            await worker.kill();
+            jobLogger.info(`Finished. Status: ${jobResultData.status}${jobResultData.error ? ` - Error: ${jobResultData.error.substring(0,100)}...` : '' }`);
+        }
+        overallResults.details.push(jobResultData);
+        await Actor.pushData(jobResultData);
+    };
+
+    const runPromises = [];
+    for (const job of jobs) {
+        if (activeWorkers.size >= effectiveInput.concurrency) {
+            await Promise.race(Array.from(activeWorkers)).catch(e => actorLog.warn(`Error during Promise.race (worker slot wait): ${e.message}`));
+        }
+        const promise = processJob(job).catch(e => {
+            actorLog.error(`Unhandled error directly from processJob promise for ${job.videoId}: ${e.message}`);
+            const errorResult = { jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId, status: 'catastrophic_processJob_failure', error: e.message };
+            Actor.pushData(errorResult).catch(pushErr => console.error("Failed to pushData for catastrophic failure:", pushErr));
+            overallResults.failedJobs++;
+            overallResults.details.push(errorResult);
+        }).finally(() => {
+            activeWorkers.delete(promise);
+        });
+        activeWorkers.add(promise);
+        runPromises.push(promise);
+        jobCounter++;
+        if (jobCounter < jobs.length && activeWorkers.size < effectiveInput.concurrency && effectiveInput.concurrencyInterval > 0) {
+            actorLog.debug(`Waiting ${effectiveInput.concurrencyInterval}s before dispatching next job (active: ${activeWorkers.size}).`);
+            await sleep(effectiveInput.concurrencyInterval * 1000);
+        }
+    }
+    await Promise.all(runPromises.map(p => p.catch(e => {
+        actorLog.error(`Error caught by Promise.all on worker promise: ${e.message}`);
+        return e;
+    })));
+
+    actorLog.info('All jobs processed. Final results:', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }});
+    await Actor.setValue('OVERALL_RESULTS', overallResults);
+    actorLog.info('Actor finished successfully.');
+    await Actor.exit();
 }
 
 // --- Actor Entry Point ---
