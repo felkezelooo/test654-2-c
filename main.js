@@ -1,15 +1,15 @@
 const Apify = require('apify');
-const { Actor } = Apify; // Destructuring is fine.
-// It's generally safer NOT to assign Actor.log to a global/module-level 'log' const here
-// if that const might be used before Actor.init() in the main flow.
+const { Actor } = Apify; // Or: const Actor = Apify.Actor;
 
+// ... other require statements ...
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { to } = require('await-to-js');
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
-// StealthPlugin application (can use console.log for these initial setup steps)
+
+// StealthPlugin application (using console.log is fine here before Actor.init)
 try {
     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
     chromium.use(StealthPlugin());
@@ -245,7 +245,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) {
 }
 
 class YouTubeViewWorker {
-    constructor(job, effectiveInput, proxyUrlString, baseLogger) { // baseLogger is passed
+    constructor(job, effectiveInput, proxyUrlString, baseLogger) {
         this.job = job;
         this.effectiveInput = effectiveInput;
         this.proxyUrlString = proxyUrlString;
@@ -299,7 +299,7 @@ class YouTubeViewWorker {
         this.logger.info('Browser context created.');
 
         if (this.effectiveInput.customAntiDetection) {
-            await applyAntiDetectionScripts(this.context, this.logger); // Apply to context
+            await applyAntiDetectionScripts(this.context, this.logger);
         }
 
         if (this.job.referer) {
@@ -698,13 +698,34 @@ class YouTubeViewWorker {
 
 // --- Main Actor Logic ---
 async function actorMainLogic() {
-    // CRITICAL: Actor.init() MUST be the first Apify-specific call.
-    await Actor.init();
+    // 1. CRITICAL: Initialize the Actor environment first.
+    try {
+        await Actor.init();
+        console.log('DEBUG: Actor.init() completed successfully.'); // Simple console log for initial check
+    } catch (initError) {
+        console.error('CRITICAL DEBUG: Actor.init() FAILED:', initError);
+        process.exit(1); // Exit if init fails, as nothing else will work.
+    }
 
-    // Now, Actor.log is initialized and can be used safely.
-    const actorLog = Actor.log; // Assign it to a local const for clarity and use.
+    // 2. CRITICAL: Assign Actor.log AFTER init.
+    const actorLog = Actor.log;
 
-    // Line 702 from your error log would correspond to this or a similar line:
+    // 3. DEBUG: Verify actorLog is what we expect.
+    if (!actorLog || typeof actorLog.info !== 'function') {
+        console.error('CRITICAL DEBUG: Actor.log is UNDEFINED or not a valid logger after init!');
+        const fallbackLogger = getSafeLogger(undefined);
+        fallbackLogger.error("actorMainLogic: Using fallback logger because Actor.log was invalid.");
+        // Option: Overwrite actorLog with fallback if you want to attempt to continue
+        // actorLog = fallbackLogger; 
+        // For now, fail the actor if the official logger isn't working.
+        await Apify.Actor.fail("Actor.log was not initialized correctly."); // Use Apify.Actor static method if instance method might fail
+        return;
+    } else {
+        // This log should now work if actorLog is valid.
+        actorLog.info('DEBUG: Actor.log is defined and seems to be a valid logger.');
+    }
+
+    // ---- Line 708 from your error is likely this line or very close to it ----
     actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic).');
 
     const input = await Actor.getInput();
@@ -713,6 +734,9 @@ async function actorMainLogic() {
         await Actor.fail('No input provided.');
         return;
     }
+    actorLog.info('ACTOR_MAIN_LOGIC: Actor input received.');
+    actorLog.debug('Raw input object:', input);
+
 
     const defaultInputFromSchema = {
         videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
@@ -944,7 +968,7 @@ async function actorMainLogic() {
     }
     await Promise.all(runPromises.map(p => p.catch(e => {
         actorLog.error(`Error caught by Promise.all on worker promise: ${e.message}`);
-        return e;
+        return e; // Return error to allow Promise.all to complete
     })));
 
     actorLog.info('All jobs processed. Final results:', { summary: { total: overallResults.totalJobs, success: overallResults.successfulJobs, failed: overallResults.failedJobs }});
@@ -956,5 +980,4 @@ async function actorMainLogic() {
 // --- Actor Entry Point ---
 Actor.main(actorMainLogic);
 
-// Final console log to indicate the script has set up Actor.main
 console.log('MAIN.JS: Script fully loaded. Actor.main is set up.');
