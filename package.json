@@ -4,7 +4,6 @@
   "description": "Apify actor for YouTube views with custom referers, proxies, and stealth.",
   "type": "commonjs",
   "dependencies": {
-    // "apify": "^3.4.2", // <-- COMMENT OUT OR REMOVE THIS LINE
     "playwright-core": "^1.46.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
