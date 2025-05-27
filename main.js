@@ -15,7 +15,6 @@ try {
     throw e; 
 }
 
-// Custom sleep function
 async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -40,14 +39,7 @@ function getSafeLogger(loggerInstance) {
         },
         exception: (e, msg, data) => console.error(`EXCEPTION: ${msg}`, e, data || ''),
     };
-
-    if (loggerInstance && 
-        typeof loggerInstance.info === 'function' &&
-        typeof loggerInstance.warn === 'function' &&
-        typeof loggerInstance.error === 'function' &&
-        typeof loggerInstance.debug === 'function' &&
-        typeof loggerInstance.child === 'function' &&
-        typeof loggerInstance.exception === 'function') {
+    if (loggerInstance && typeof loggerInstance.info === 'function' && typeof loggerInstance.child === 'function') {
         return loggerInstance;
     }
     console.error("APIFY LOGGER WAS NOT AVAILABLE OR INCOMPLETE, FALLING BACK TO CONSOLE.");
@@ -94,7 +86,7 @@ async function handleYouTubeConsent(page, logger) {
             if (await button.isVisible({ timeout: 7000 })) { 
                 safeLogger.info(`Consent button found: "${selector}". Clicking.`);
                 await button.click({ timeout: 5000, force: true }); 
-                await page.waitForTimeout(1500 + random(500, 1500)); // Using page's waitForTimeout
+                await page.waitForTimeout(1500 + random(500, 1500));
                 safeLogger.info('Consent button clicked.');
                 const stillVisible = await page.locator('ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"]').first().isVisible({timeout:1000}).catch(() => false);
                 if (!stillVisible) { safeLogger.info('Consent dialog likely dismissed.'); return true; }
@@ -201,7 +193,7 @@ async function getVideoDuration(page, loggerToUse) {
         } catch (e) {
             safeLogger.debug(`Attempt ${i+1} to get duration failed: ${e.message.split('\n')[0]}`);
         }
-        await sleep(1000); // USE CUSTOM SLEEP
+        await sleep(1000);
     }
     safeLogger.warning('Could not determine video duration after 15 seconds.');
     return null; 
@@ -212,7 +204,7 @@ async function clickIfExists(page, selector, timeout = 3000, loggerToUse) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false }); 
+        await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false }); // force: true can be more reliable for YT
         safeLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
@@ -227,7 +219,7 @@ class YouTubeViewWorker {
         this.job = job; this.effectiveInput = effectiveInput; this.proxyUrlString = proxyUrlString;
         this.logger = getSafeLogger(baseLogger).child({ prefix: `Worker-${job.videoId.substring(0, 6)}: ` });
         this.id = uuidv4(); this.browser = null; this.context = null; this.page = null; this.killed = false;
-        this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0, };
+        this.adWatchState = { isWatchingAd: false, timeToWatchThisAdBeforeSkip: 0, adPlayedForEnoughTime: false, adStartTime: 0 };
         this.lastReportedVideoTimeSeconds = 0;
     }
 
@@ -328,8 +320,14 @@ class YouTubeViewWorker {
         }
         
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
-        await this.ensureVideoPlaying(playButtonSelectors);
-
+        this.logger.info('Initial attempt to ensure video is playing after setup...');
+        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors);
+        if (initialPlaySuccess) {
+            this.logger.info('Video seems to be playing after initial setup efforts.');
+        } else {
+            this.logger.warn('Video did not reliably start playing during initial setup. Watch loop will attempt further.');
+        }
+        
         await this.page.waitForTimeout(random(2000, 4500));
         return true;
     }
@@ -378,7 +376,7 @@ class YouTubeViewWorker {
                  else this.logger.info('Max ad watch time reached, but cannot skip yet.');
                  break; 
             }
-            await sleep(adCheckInterval); // USE CUSTOM SLEEP
+            await sleep(adCheckInterval);
         }
         if (adWatchLoop >= maxAdLoopIterations) this.logger.warn('Max ad loop iterations reached in handleAds.');
         this.logger.info('Ad handling logic finished for this check.');
@@ -387,34 +385,60 @@ class YouTubeViewWorker {
 
     async ensureVideoPlaying(playButtonSelectors) { 
         const logFn = (msg, level = 'info') => this.logger[level](msg);
-        logFn('Ensuring video is playing (your version)...');
-        for (let attempt = 0; attempt < 3; attempt++) {
+        logFn('Ensuring video is playing (refined)...');
+        for (let attempt = 0; attempt < 4; attempt++) {
             if (this.killed || this.page.isClosed()) return false;
-            const isPaused = await this.page.evaluate(() => {
-                const video = document.querySelector('video.html5-main-video');
-                if (video) {
-                    if (video.paused) video.play().catch(e => console.warn('Direct video.play() in eval failed:', e.message)); 
-                    return video.paused;
-                } return true; 
-            }).catch(e => { logFn(`Error evaluating video state for play: ${e.message}`, 'warn'); return true; });
-
-            if (!isPaused) { logFn(`Video is playing (attempt ${attempt + 1}).`); return true; }
-
-            logFn(`Video is paused (attempt ${attempt + 1}), trying to click play buttons.`);
+            try {
+                await this.page.evaluate(() => {
+                    const video = document.querySelector('video.html5-main-video');
+                    if (video && video.paused) {
+                        console.log('[In-Page Eval] ensureVideoPlaying: Attempting video.play()');
+                        video.play().catch(e => console.warn('[In-Page Eval] video.play() promise rejected:', e.message));
+                    }
+                });
+                await sleep(750 + random(250));
+                let isActuallyPlaying = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(() => true));
+                if (isActuallyPlaying) {
+                    logFn(`Video is playing after JS play() attempt ${attempt + 1}.`);
+                    return true;
+                }
+            } catch (e) {
+                logFn(`JS play() evaluation error: ${e.message.split('\n')[0]}`, 'debug');
+            }
+            
+            logFn(`Video still paused (attempt ${attempt + 1}), trying to click play buttons/player.`);
             for (const selector of playButtonSelectors) {
                 if (await clickIfExists(this.page, selector, 1500, this.logger)) {
-                    logFn(`Clicked play button: ${selector}`);
-                    await this.page.waitForTimeout(500); 
-                    const stillPaused = await this.page.evaluate(() => document.querySelector('video')?.paused).catch(()=>true);
-                    if (!stillPaused) { logFn('Video started playing after click.'); return true; }
+                    logFn(`Clicked potential play button: ${selector}`);
+                    await sleep(750 + random(250));
+                    let isActuallyPlaying = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(() => true));
+                    if (isActuallyPlaying) {
+                        logFn('Video started playing after clicking a play button.');
+                        return true;
+                    }
                 }
             }
-            logFn('Trying to click video element directly to play.');
-            await this.page.locator('video.html5-main-video').first().click({ timeout: 2000, force: true, trial: true }).catch(e => logFn(`Failed to click video element (trial): ${e.message}`, 'warn'));
-            await this.page.waitForTimeout(500);
-            const finalCheckPaused = await this.page.evaluate(() => document.querySelector('video')?.paused).catch(()=>true);
-            if (!finalCheckPaused) { logFn('Video started playing after general video click.'); return true; }
-            if (attempt < 2) await sleep(1000); // USE CUSTOM SLEEP
+
+            logFn('Trying to click video player area directly.');
+            const playerLocators = ['video.html5-main-video', '.html5-video-player', '#movie_player'];
+            for (const playerSelector of playerLocators) {
+                try {
+                    const playerElement = this.page.locator(playerSelector).first();
+                    if (await playerElement.isVisible({timeout: 1000})) {
+                        await playerElement.click({ timeout: 1500, force: true }); 
+                        await sleep(750 + random(250));
+                        let isActuallyPlaying = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(() => true));
+                        if (isActuallyPlaying) {
+                            logFn(`Video started playing after clicking player area ('${playerSelector}').`);
+                            return true;
+                        }
+                        break; 
+                    }
+                } catch (e) {
+                    logFn(`Failed to click player area ('${playerSelector}'): ${e.message.split('\n')[0]}`, 'debug');
+                }
+            }
+            if (attempt < 3) await sleep(1000 + attempt * 500);
         }
         logFn('Failed to ensure video is playing after multiple attempts.', 'warn');
         return false;
@@ -451,7 +475,7 @@ class YouTubeViewWorker {
                 });
                 if (!videoState) {
                     this.logger.warn('Video element not found in evaluate during watch loop. Trying to recover.');
-                    await sleep(2000); // USE CUSTOM SLEEP
+                    await sleep(2000);
                     if (!(await this.page.locator('video.html5-main-video').count() > 0)) {
                         throw new Error('Video element disappeared definitively during watch loop.');
                     }
@@ -486,7 +510,7 @@ class YouTubeViewWorker {
                  await this.page.mouse.move(random(100,500),random(100,300),{steps:random(3,7)}).catch(()=>{}); 
                  this.logger.debug('Simulated mouse move.');
             }
-            await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime))); // USE CUSTOM SLEEP
+            await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
         const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
         this.logger.info(`Finished watch. Total loop: ${(actualOverallWatchDurationMs / 1000).toFixed(1)}s. Last video time: ${currentActualVideoTime.toFixed(1)}s.`);
@@ -508,7 +532,7 @@ class YouTubeViewWorker {
 
 async function actorMainLogic() {
     await Actor.init(); 
-    const actorLog = getSafeLogger(log); // Initialize actorLog AFTER Actor.init()
+    const actorLog = getSafeLogger(log); 
     
     actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (Custom Playwright with Stealth & Integrated Logic).');
 
@@ -560,7 +584,7 @@ async function actorMainLogic() {
     }
 
     const jobs = [];
-    const userAgentStrings = [ // Make this available for search browser context
+    const userAgentStrings = [ // Define it once here for search logic
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0'
