@@ -37,6 +37,7 @@ Date.prototype.isDstActive = function(tz = "America/New_York") {
 
 const FINGERPRINT_PROFILES = {
     'US_CHROME_WIN_NVIDIA': {
+        profileKeyName: 'US_CHROME_WIN_NVIDIA',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         locale: 'en-US',
         timezoneId: 'America/New_York',
@@ -50,6 +51,7 @@ const FINGERPRINT_PROFILES = {
         vendor: 'Google Inc.'
     },
     'GB_CHROME_WIN_AMD': {
+        profileKeyName: 'GB_CHROME_WIN_AMD',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
         locale: 'en-GB',
         timezoneId: 'Europe/London',
@@ -63,6 +65,7 @@ const FINGERPRINT_PROFILES = {
         vendor: 'Google Inc.'
     },
     'US_MAC_CHROME_M_SERIES': {
+        profileKeyName: 'US_MAC_CHROME_M_SERIES',
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         locale: 'en-US',
         timezoneId: 'America/Los_Angeles',
@@ -76,6 +79,7 @@ const FINGERPRINT_PROFILES = {
         vendor: 'Apple Computer, Inc.'
     },
     'HU_CHROME_WIN_INTEL': {
+        profileKeyName: 'HU_CHROME_WIN_INTEL',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         locale: 'hu-HU',
         timezoneId: 'Europe/Budapest',
@@ -90,7 +94,7 @@ const FINGERPRINT_PROFILES = {
     }
 };
 
-function getRandomProfileKey() {
+function getRandomProfileKeyName() {
     const keys = Object.keys(FINGERPRINT_PROFILES);
     return keys[Math.floor(Math.random() * keys.length)];
 }
@@ -98,15 +102,18 @@ function getRandomProfileKey() {
 function getProfileByCountry(countryCode) {
     const countryUpper = countryCode ? countryCode.toUpperCase() : '';
     const deepCopy = (profile) => JSON.parse(JSON.stringify(profile));
-    const matchingProfiles = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith(countryUpper + '_'));
-    if (matchingProfiles.length > 0) {
-        return deepCopy(FINGERPRINT_PROFILES[matchingProfiles[Math.floor(Math.random() * matchingProfiles.length)]]);
+    const matchingProfileKeys = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith(countryUpper + '_'));
+    if (matchingProfileKeys.length > 0) {
+        const selectedKey = matchingProfileKeys[Math.floor(Math.random() * matchingProfileKeys.length)];
+        return deepCopy(FINGERPRINT_PROFILES[selectedKey]);
     }
-    const usProfiles = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith('US_'));
-    if (usProfiles.length > 0) return deepCopy(FINGERPRINT_PROFILES[usProfiles[Math.floor(Math.random() * usProfiles.length)]]);
-    return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKey()]);
+    const usProfileKeys = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith('US_'));
+    if (usProfileKeys.length > 0) {
+         const selectedKey = usProfileKeys[Math.floor(Math.random() * usProfileKeys.length)];
+         return deepCopy(FINGERPRINT_PROFILES[selectedKey]);
+    }
+    return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
-
 
 try {
     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
@@ -223,52 +230,71 @@ async function handleYouTubeConsent(page, logger) {
     return false;
 }
 
-// Added new args from Claude
+// Claude: Updated ANTI_DETECTION_ARGS
 const ANTI_DETECTION_ARGS = [
     '--disable-blink-features=AutomationControlled',
     '--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyEnforcement,AvoidUnnecessaryBeforeUnloadCheckSync,Translate',
     '--disable-component-extensions-with-background-pages',
-    '--disable-default-apps', '--disable-extensions', '--disable-site-isolation-trials',
+    '--disable-default-apps', '--disable-extensions', // Removed --disable-site-isolation-trials from here, as added later
     '--disable-sync', '--force-webrtc-ip-handling-policy=default_public_interface_only',
     '--no-first-run', '--no-service-autorun', '--password-store=basic',
     '--use-mock-keychain', '--enable-precise-memory-info',
     '--disable-infobars', '--disable-notifications', '--disable-popup-blocking',
     '--disable-dev-shm-usage', '--no-sandbox', '--disable-gpu',
-    '--disable-setuid-sandbox', '--disable-software-rasterizer', '--mute-audio', // mute-audio was already there
+    '--disable-setuid-sandbox', '--disable-software-rasterizer',
     '--ignore-certificate-errors',
-    // NEW from Claude:
+    // NEW: Autoplay and media policies
     '--autoplay-policy=no-user-gesture-required',
+    '--disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies', // Note: MediaEngagementBypassAutoplayPolicies might be what we want
     '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
+    '--disable-features=AudioServiceOutOfProcess',
+    '--disable-features=IsolateOrigins', // Repeated, ensure it's fine or remove duplicate
+    '--disable-site-isolation-trials', // Already present in original
+    // '--mute-audio', // REMOVED by Claude
 ];
+
 
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
     const {
-        locale, /* timezoneOffsetMinutes, // Relying on timezoneId + stealth */
-        webGLVendor, webGLRenderer,
+        locale, webGLVendor, webGLRenderer,
         platform, deviceMemory, hardwareConcurrency, screen: dynamicScreen, vendor
     } = fingerprintProfile;
 
     const scriptToInject = (
-        passedLocale, /* passedTimezoneOffset, // Removed */
-        passedWebGLVendor, passedWebGLRenderer,
+        passedLocale, passedWebGLVendor, passedWebGLRenderer,
         passedPlatform, passedDeviceMemory, passedHardwareConcurrency, passedScreen, passedVendor
     ) => {
-        // Navigator Overrides
+        // Claude: Add this at the beginning of scriptToInject function:
+        // Override autoplay policy detection
+        try {
+            Object.defineProperty(navigator, 'getAutoplayPolicy', {
+                value: function(type) { // eslint-disable-line no-unused-vars
+                    return 'allowed';
+                },
+                configurable: true
+            });
+        } catch(e) { console.debug("Failed to set navigator.getAutoplayPolicy", e.message); }
+
+        // Ensure user activation
+        try {
+            Object.defineProperty(navigator, 'userActivation', {
+                get: () => ({
+                    hasBeenActive: true,
+                    isActive: true
+                }),
+                configurable: true
+            });
+        } catch(e) { console.debug("Failed to set navigator.userActivation", e.message); }
+
+
         if (typeof navigator.__proto__ !== 'undefined') {
              try { delete navigator.__proto__.webdriver; } catch(e) { console.debug("Failed to delete navigator.__proto__.webdriver", e.message); }
-        } else if (navigator.webdriver) { // Fallback
+        } else if (navigator.webdriver) {
             try{ Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e) { console.debug("Failed to redefine navigator.webdriver", e.message); }
         }
-
-        // Claude: delete chrome.runtime properties
-        // if(window.chrome && window.chrome.runtime) { // Check existence before deleting
-        //     try { delete window.chrome.runtime.onConnect; } catch(e) { console.debug("Failed to delete chrome.runtime.onConnect", e.message); }
-        //     try { delete window.chrome.runtime.onMessage; } catch(e) { console.debug("Failed to delete chrome.runtime.onMessage", e.message); }
-        // } // This might be too aggressive and conflict with stealth plugin or legitimate page scripts. Keep commented for now.
-
 
         const langBase = passedLocale.split('-')[0];
         const languagesArray = passedLocale.includes('-') ? [passedLocale, langBase] : [passedLocale];
@@ -279,17 +305,15 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
         if (typeof passedHardwareConcurrency === 'number') try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => passedHardwareConcurrency, configurable: true }); } catch(e) { console.debug("Failed to set navigator.hardwareConcurrency", e.message); }
         if (typeof passedVendor === 'string') try { Object.defineProperty(navigator, 'vendor', { get: () => passedVendor, configurable: true }); } catch(e) { console.debug("Failed to set navigator.vendor", e.message); }
 
-        // WebGL Spoofing
         try {
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function (parameter) {
-                if (parameter === 37445 /* UNMASKED_VENDOR_WEBGL */) return passedWebGLVendor;
-                if (parameter === 37446 /* UNMASKED_RENDERER_WEBGL */) return passedWebGLRenderer;
+                if (parameter === 37445) return passedWebGLVendor;
+                if (parameter === 37446) return passedWebGLRenderer;
                 return originalGetParameter.apply(this, arguments);
             };
         } catch (e) { console.debug('[AntiDetectInPage] Failed WebGL spoof:', e.message); }
 
-        // Canvas Spoofing
         try {
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
@@ -311,17 +335,23 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
             };
         } catch (e) { console.debug('[AntiDetectInPage] Failed Canvas spoof:', e.message); }
 
-        // Permissions Query (Notifications)
-        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
-            const originalPermissionsQuery = navigator.permissions.query;
-            navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                Promise.resolve({ state: Notification.permission || 'prompt' }) :
-                originalPermissionsQuery.call(navigator.permissions, parameters)
-            );
+        // Claude: Override permissions (partially)
+        const originalPermissionsQuery = navigator.permissions ? navigator.permissions.query : undefined;
+        if (originalPermissionsQuery) {
+            navigator.permissions.query = function(permissionDesc) {
+                if (permissionDesc.name === 'autoplay' || 
+                    permissionDesc.name === 'camera' || 
+                    permissionDesc.name === 'microphone' ||
+                    permissionDesc.name === 'notifications' // Combine with previous notification spoof
+                   ) {
+                    return Promise.resolve({ state: 'granted' }); // Grant common permissions often checked
+                }
+                // Fallback to original for other permissions
+                return originalPermissionsQuery.apply(navigator.permissions, arguments);
+            };
         }
 
-        // Media Devices Spoof (Claude's suggestion)
+
         if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
              const generateRandomString = (length) => {
                 let result = '';
@@ -342,7 +372,6 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
             ]);
         }
 
-        // Screen Spoofing
         if (window.screen && passedScreen) {
             try {
                 Object.defineProperty(window.screen, 'availWidth', { get: () => passedScreen.availWidth, configurable: true });
@@ -354,10 +383,6 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
             } catch (e) { console.debug('[AntiDetectInPage] Failed screen spoof:', e.message); }
          }
 
-        // Timezone Spoofing - REMOVED
-        // try { Date.prototype.getTimezoneOffset = function() { return passedTimezoneOffset; }; } catch (e) { console.debug('[AntiDetectInPage] Failed timezone spoof:', e.message); }
-
-        // Plugins/MimeTypes
         if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetectInPage] Failed plugin spoof:', e.message); }
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { console.debug('[AntiDetectInPage] Failed mimeType spoof:', e.message); }
 
@@ -373,7 +398,6 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
     try {
         const argsForScript = {
             passedLocale: locale,
-            // passedTimezoneOffset: timezoneOffsetMinutes, // Removed
             passedWebGLVendor: webGLVendor,
             passedWebGLRenderer: webGLRenderer,
             passedPlatform: platform,
@@ -388,7 +412,7 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
         } else if (pageOrContext.evaluateOnNewDocument) {
             await pageOrContext.evaluateOnNewDocument(scriptToInject, argsForScript);
         }
-        safeLogger.info(`Custom anti-detection script applied. Profile hints: Locale=${locale}, Platform=${platform}, Vendor=${vendor}, WebGLV=${webGLVendor.substring(0,15)}... (Timezone spoof via getTimezoneOffset REMOVED)`);
+        safeLogger.info(`Custom anti-detection script applied (v1.6). Profile hints: Locale=${locale}, Platform=${platform}, Vendor=${vendor}, WebGLV=${webGLVendor.substring(0,15)}...`);
     } catch (e) {
         safeLogger.error(`Failed to add anti-detection init script: ${e.message}`);
     }
@@ -482,7 +506,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
+        await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false }); // Consider if force:true is always needed
         safeLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
@@ -491,6 +515,33 @@ async function clickIfExists(page, selector, timeout = 3000, logger) {
         return false;
     }
 }
+
+// Claude: New function to enable autoplay
+async function enableAutoplayWithInteraction(page, logger) {
+    const safeLogger = getSafeLogger(logger);
+    safeLogger.info('Performing initial interaction to enable autoplay...');
+    
+    try {
+        await page.mouse.click(100 + nodeJsRandom(0,50), 100 + nodeJsRandom(0,50), {delay: nodeJsRandom(50,150)}); // Click slightly offset
+        await sleep(100 + nodeJsRandom(0,50));
+        
+        await page.locator('body').click({position: {x: 50 + nodeJsRandom(0,20), y: 50 + nodeJsRandom(0,20)}, delay: nodeJsRandom(50,100) });
+        await sleep(100 + nodeJsRandom(0,50));
+        
+        // This mediaSession part might not be directly effective for YouTube's own player logic
+        // but doesn't hurt to try as part of general "user is active" signals.
+        await page.evaluate(() => {
+            if (navigator.mediaSession) {
+                try { navigator.mediaSession.setActionHandler('play', () => {}); } catch(e) { console.warn("Error setting mediaSession play handler", e); }
+            }
+        });
+        
+        safeLogger.info('Initial interaction completed');
+    } catch (e) {
+        safeLogger.warn(`Initial interaction failed: ${e.message}`);
+    }
+}
+
 
 class YouTubeViewWorker {
     constructor(job, effectiveInput, proxyUrlString, baseLogger) {
@@ -515,7 +566,7 @@ class YouTubeViewWorker {
         }
 
         this.fingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
-        this.logger.info(`Selected Fingerprint Profile: Key Hint=${Object.keys(FINGERPRINT_PROFILES).find(key => FINGERPRINT_PROFILES[key] === this.fingerprintProfile)}, UA=${this.fingerprintProfile.userAgent.substring(0,70)}..., Locale=${this.fingerprintProfile.locale}, TZID=${this.fingerprintProfile.timezoneId}, Vendor=${this.fingerprintProfile.vendor}`);
+        this.logger.info(`Selected Fingerprint Profile: Key Hint=${this.fingerprintProfile.profileKeyName || 'N/A'}, UA=${this.fingerprintProfile.userAgent.substring(0,70)}..., Locale=${this.fingerprintProfile.locale}, TZID=${this.fingerprintProfile.timezoneId}, Vendor=${this.fingerprintProfile.vendor}`);
         
         this.killed = false;
         this.maxTimeReachedThisView = 0;
@@ -570,22 +621,33 @@ class YouTubeViewWorker {
         this.browser = await chromium.launch(launchOptions);
         this.logger.info('Browser launched with playwright-extra.');
 
+        // Claude: Update browser context permissions & viewport
         this.context = await this.browser.newContext({
-            bypassCSP: true, ignoreHTTPSErrors: true,
+            bypassCSP: true, 
+            ignoreHTTPSErrors: true,
             locale: this.fingerprintProfile.locale,
             timezoneId: this.fingerprintProfile.timezoneId,
-            javaScriptEnabled: true, userAgent: this.fingerprintProfile.userAgent,
+            javaScriptEnabled: true, 
+            userAgent: this.fingerprintProfile.userAgent,
             geolocation: this.effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
                          this.effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
                          this.effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
-            permissions: ['geolocation', 'notifications'],
+            permissions: ['geolocation', 'notifications', 'camera', 'microphone'], // Added camera and microphone
             screen: {
+                width: this.fingerprintProfile.screen.width,
+                height: this.fingerprintProfile.screen.height
+            },
+            viewport: { // NEW: Set viewport explicitly
                 width: this.fingerprintProfile.screen.width,
                 height: this.fingerprintProfile.screen.height
             },
             deviceScaleFactor: (this.fingerprintProfile.screen.width > 2000 || this.fingerprintProfile.screen.height > 1200) ? 2 : 1,
             isMobile: false,
             hasTouch: false,
+            // NEW: Additional media permissions (from Claude)
+            colorScheme: 'light', // 'light' or 'dark' or 'no-preference'
+            reducedMotion: 'no-preference', // 'reduce' or 'no-preference'
+            forcedColors: 'none', // 'active' or 'none'
         });
         this.logger.info(`Browser context created. Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
 
@@ -611,7 +673,11 @@ class YouTubeViewWorker {
         this.logger.info('Navigation (DOM content loaded) complete.');
         
         await handleYouTubeConsent(this.page, this.logger);
-        await sleep(nodeJsRandom(2000, 4000));
+        await sleep(nodeJsRandom(1000, 2000)); // Shorter pause after consent
+
+        // Claude: Enable autoplay with interaction
+        await enableAutoplayWithInteraction(this.page, this.logger);
+
 
         this.logger.info('Waiting for video to load data (up to 90s)...');
         try {
@@ -620,7 +686,7 @@ class YouTubeViewWorker {
             this.logger.error(`CRITICAL: Video failed to load properly: ${loadError.message}`);
             if (Actor.isAtHome()) { // Claude: Simplified Actor.isAtHome() check
                 try {
-                    const failTime = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '_');
+                    const failTime = new Date().toISOString().replace(/[:.]/g, '-'); // Claude: Simplified replacement
                     const screenshotKey = `LOAD_FAIL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${failTime}`;
                     const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
                     await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
@@ -639,17 +705,17 @@ class YouTubeViewWorker {
             throw new Error(`Could not confirm valid video duration after load (got ${duration}).`);
         }
 
-        // Re-enabled Quality Setting block with Claude's fixes
         this.logger.info('Attempting to set video quality...');
         try {
+            // Using Claude's timeouts, slightly adjusted for stability
             const settingsButton = this.page.locator('.ytp-settings-button').first();
-            if (await settingsButton.isVisible({timeout: 5000})) {  // Claude: Reduced timeout
-                await settingsButton.click({timeout: 2000});  // Claude: Reduced timeout
+            if (await settingsButton.isVisible({timeout: 7000})) {
+                await settingsButton.click({timeout: 3000});
                 await sleep(nodeJsRandom(600, 1000));
                 
                 const qualityMenuItem = this.page.locator('.ytp-menuitem-label:has-text("Quality")').first();
-                if (await qualityMenuItem.isVisible({timeout: 2000})) {  // Claude: Reduced timeout
-                    await qualityMenuItem.click({timeout: 2000});  // Claude: Added timeout
+                if (await qualityMenuItem.isVisible({timeout: 4000})) {
+                    await qualityMenuItem.click({timeout: 3000});
                     await sleep(nodeJsRandom(600, 1000));
                     
                     const qualityOptionsElements = await this.page.locator('.ytp-quality-menu .ytp-menuitem').all();
@@ -661,7 +727,7 @@ class YouTubeViewWorker {
                                 lowestQualityOptionElement = qualityOptionsElements[qualityOptionsElements.length - 2];
                             }
                         }
-                        await lowestQualityOptionElement.click({timeout: 2000});  // Claude: Added timeout
+                        await lowestQualityOptionElement.click({timeout: 3000});
                         this.logger.info(`Attempted to set video quality.`);
                     } else { 
                         (this.logger.warn || this.logger.warning).call(this.logger, 'No quality options found in menu.'); 
@@ -671,8 +737,7 @@ class YouTubeViewWorker {
                     (this.logger.warn || this.logger.warning).call(this.logger, 'Quality menu item not found.'); 
                 }
                 
-                // Claude: Close settings menu if still open
-                if (await this.page.locator('.ytp-settings-menu').isVisible({timeout:500})) {
+                if (await this.page.locator('.ytp-settings-menu').isVisible({timeout:1000})) {
                     await this.page.keyboard.press('Escape', {delay: nodeJsRandom(100,300)});
                 }
             } else { 
@@ -680,13 +745,11 @@ class YouTubeViewWorker {
             }
         } catch (e) {
             (this.logger.warn || this.logger.warning).call(this.logger, `Could not set video quality: ${e.message.split('\n')[0]}`);
-            // Claude: Ensure settings menu is closed on error
             try {
                 if (this.page && !this.page.isClosed() && await this.page.locator('.ytp-settings-menu').isVisible({timeout:500})) {
                     await this.page.keyboard.press('Escape').catch(()=>{});
                 }
             } catch (cleanupError) {
-                // Ignore cleanup errors
                  this.logger.debug(`Error during quality setting cleanup: ${cleanupError.message}`);
             }
         }
@@ -694,20 +757,36 @@ class YouTubeViewWorker {
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Attempting to ensure video is playing after load and quality set...');
-        // Using Claude's new ensureVideoPlaying
-        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup');
-        if (initialPlaySuccess) {
-            this.logger.info('Video confirmed playing after initial setup and quality adjustment.');
+        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup'); // Now uses Claude's v1.6 ensureVideoPlaying
+        
+        // Claude: Update the watch loop to use recovery if initial play fails
+        if (!initialPlaySuccess) {
+            this.logger.warn('Initial play attempts failed. Attempting playback recovery method...');
+            const recoverySuccess = await this.attemptPlaybackRecovery(); // New recovery method
+            if (!recoverySuccess) {
+                this.logger.error('All playback attempts failed, including specific recovery. Video may not play.');
+                if (Actor.isAtHome()) {
+                    try {
+                        const failTime = new Date().toISOString().replace(/[:.]/g, '-');
+                        const screenshotKey = `PLAY_FAIL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${failTime}`;
+                        await Actor.setValue(screenshotKey, await this.page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+                        this.logger.info(`Play failure screenshot saved: ${screenshotKey}`);
+                    } catch (e) { this.logger.error(`Failed to save play failure screenshot: ${e.message}`); }
+                }
+                throw new Error('Video playback could not be started after all attempts including specific recovery.');
+            }
+            this.logger.info('Playback started after specific recovery method.');
         } else {
-            this.logger.warn('Video did not reliably start playing after setup/quality. Watch loop will attempt further.');
+            this.logger.info('Video confirmed playing after initial setup and quality adjustment.');
         }
+
 
         await sleep(nodeJsRandom(2000, 4500));
         return true;
     }
 
     async handleAds() {
-        // ... (Unchanged from v1.4)
+        // ... (Unchanged from v1.5)
         let adWasPlayingThisCheckCycle = false;
         const adPlayingInitially = await this.page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
 
@@ -761,13 +840,22 @@ class YouTubeViewWorker {
         return adWasPlayingThisCheckCycle;
     }
 
-    // Claude's ensureVideoPlaying - v1.5
+    // Claude's new ensureVideoPlaying v1.6 - Ultra Enhanced
     async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
             const loggerMethod = this.logger[level] || (level === 'warn' && (this.logger.warning || this.logger.warn)) || this.logger.info;
             loggerMethod.call(this.logger, `[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
-        logFn(`Ensuring video is playing (v1.5 - Enhanced Claude)...`);
+        logFn(`Ensuring video is playing (v1.6 - Ultra Enhanced)...`);
+
+        // First, ensure page has focus
+        try {
+            await this.page.bringToFront();
+            await this.page.evaluate(() => window.focus());
+            logFn('Brought page to front and focused window');
+        } catch (e) {
+            logFn(`Failed to focus page: ${e.message}`, 'debug');
+        }
 
         for (let attempt = 0; attempt < 3; attempt++) {
             if (this.killed || this.page.isClosed()) return false;
@@ -780,167 +868,249 @@ class YouTubeViewWorker {
 
             let videoState = await this.page.evaluate(() => {
                 const v = document.querySelector('video.html5-main-video');
-                if (!v) return { p: true, rs: 0, err: { code: null, message: "No video element found in DOM" }, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0 }; // Assume muted if no video
+                if (!v) return { p: true, rs: 0, err: { code: null, message: "No video element found in DOM" }, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0, currentTime: 0 };
                 return {
                     p: v.paused, rs: v.readyState,
                     err: v.error ? { code: v.error.code, message: v.error.message } : null,
                     ended: v.ended, networkState: v.networkState,
                     src: v.currentSrc || v.src, videoWidth: v.videoWidth, videoHeight: v.videoHeight,
-                    muted: v.muted, volume: v.volume
+                    muted: v.muted, volume: v.volume, currentTime: v.currentTime
                 };
             }).catch((e) => {
                 logFn(`Eval to get video state failed: ${e.message}`, 'warn');
-                return { p: true, rs: 0, err: {message: "Eval failed to get video state"}, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0 };
+                return { p: true, rs: 0, err: {message: "Eval failed to get video state"}, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0, currentTime: 0 };
             });
 
             if (videoState.err && videoState.err.code) {
                 logFn(`Video element error: Code ${videoState.err.code}, Msg: ${videoState.err.message || 'N/A'}. Attempt ${attempt + 1}`, 'warn');
-                if (videoState.err.code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */ || videoState.err.code === 3 /* MEDIA_ERR_DECODE */) {
-                    logFn(`Fatal media error (Code: ${videoState.err.code}). Stopping play attempts for '${attemptType}'.`, 'error');
+                if (videoState.err.code === 4 || videoState.err.code === 3) { // MEDIA_ERR_SRC_NOT_SUPPORTED or MEDIA_ERR_DECODE
+                    logFn(`Fatal media error (Code: ${videoState.err.code}). Stopping play attempts.`, 'error');
                     return false;
                 }
             }
-             if (videoState.networkState === 3 /* NETWORK_NO_SOURCE */ && attempt > 0) { // Check after first attempt
+             if (videoState.networkState === 3 && attempt > 0) {
                 logFn(`Video networkState is NETWORK_NO_SOURCE (src: ${videoState.src}). Unlikely to play. Attempt ${attempt + 1}`, 'error');
                 return false;
             }
 
-
             // Check if already playing
             if (!videoState.p && videoState.rs >= 3 && !videoState.ended) {
-                logFn(`Video is already playing (attempt ${attempt + 1}). RS:${videoState.rs}, NS:${videoState.networkState}`);
+                logFn(`Video is already playing (attempt ${attempt + 1}). RS:${videoState.rs}, NS:${videoState.networkState}, Time:${videoState.currentTime?.toFixed(1)}`);
                 return true;
             }
 
-            logFn(`Video state (attempt ${attempt + 1}): Paused=${videoState.p}, Ended=${videoState.ended}, RS=${videoState.rs}, NS=${videoState.networkState}, Muted=${videoState.muted}, Volume=${videoState.volume?.toFixed(2)}, Dim=${videoState.videoWidth}x${videoState.videoHeight}. Trying strategies...`);
+            logFn(`Video state (attempt ${attempt + 1}): Paused=${videoState.p}, Ended=${videoState.ended}, RS=${videoState.rs}, NS=${videoState.networkState}, Muted=${videoState.muted}, Volume=${videoState.volume?.toFixed(2)}, Time=${videoState.currentTime?.toFixed(1)}, Dim=${videoState.videoWidth}x${videoState.videoHeight}. Trying strategies...`);
 
-            // NEW: Try unmuting the video first
-            if (videoState.muted) {
+            // Strategy 1: Look for and click the big play button first
+            const bigPlayButtonSelectors = [
+                '.ytp-large-play-button',
+                '.ytp-play-button[aria-label="Play"]', // Standard play button
+                '.ytp-cued-thumbnail-overlay',
+                '.ytp-cued-thumbnail-overlay-image',
+                'button[aria-label="Play"]', // Generic play button
+                '.ytp-large-play-button-bg'
+            ];
+
+            for (const selector of bigPlayButtonSelectors) {
                 try {
-                    await this.page.evaluate(() => {
-                        const video = document.querySelector('video.html5-main-video');
-                        if (video) {
-                            video.muted = false;
-                            video.volume = 0.5; // Set a default volume
+                    const playBtn = this.page.locator(selector).first();
+                    if (await playBtn.isVisible({timeout: 500 + (attempt * 200) })) { // Slightly increasing timeout per attempt
+                        await playBtn.click({timeout: 2000, force: false}); // force: false recommended by Claude
+                        logFn(`Clicked play button: ${selector}`);
+                        await sleep(1500 + nodeJsRandom(500));
+                        
+                        const tempState = await this.page.evaluate(() => {
+                            const v = document.querySelector('video.html5-main-video');
+                            return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                        }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                        
+                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                            logFn(`Video playing after clicking ${selector}. Time: ${tempState.ct?.toFixed(1)}`); 
+                            return true; 
                         }
-                    });
-                    logFn('Attempted to unmute video and set volume to 50%');
-                    await sleep(500); // Short pause for unmute to take effect
-                     // Re-check state after unmuting
-                    const unmutedState = await this.page.evaluate(() => {const v=document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended, m:v.muted} : {p:true,rs:0,e:true,m:true};}).catch(()=>({p:true,rs:0,e:true,m:true}));
-                    if (!unmutedState.p && unmutedState.rs >=3 && !unmutedState.e) {
-                        logFn('Video started playing after unmute.'); return true;
                     }
-                    if (!unmutedState.m) logFn('Video successfully unmuted.'); else logFn('Video still muted after attempt.', 'warn');
-
                 } catch (e) {
-                    logFn(`Failed to unmute video: ${e.message}`, 'debug');
+                    logFn(`Failed to click ${selector}: ${e.message}`, 'debug');
                 }
             }
 
-            // NEW: Try clicking the big play button overlay first
-            const bigPlayButton = this.page.locator('.ytp-large-play-button, .ytp-cued-thumbnail-overlay-image').first();
-            if (await bigPlayButton.isVisible({timeout: 1000})) {
-                try {
-                    await bigPlayButton.click({timeout: 2000, force: false}); // force: false initially
-                    logFn('Clicked large play button overlay');
-                    await sleep(1500 + nodeJsRandom(500));
-                    const tempState = await this.page.evaluate(() => {const v=document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended} : {p:true,rs:0,e:true};}).catch(()=>({p:true,rs:0,e:true}));
-                    if (!tempState.p && tempState.rs >=3 && !tempState.e) { 
-                        logFn(`Video playing after clicking large play button (attempt ${attempt + 1}).`); 
-                        return true; 
-                    }
-                } catch (e) {
-                    logFn(`Failed to click large play button: ${e.message}`, 'debug');
-                }
-            }
-
-            // NEW: Try keyboard shortcut 'k' to play/pause
+            // Strategy 2: Try spacebar with focus on player
             try {
-                await this.page.locator('body').press('k'); // Ensure focus on body or player for key press
-                logFn('Pressed "k" key to toggle play/pause');
+                const playerElement = this.page.locator('#movie_player, .html5-video-player, body').first(); // Added body as fallback for focus
+                if (await playerElement.isVisible({timeout: 500})) { // check if player or body is available
+                    await playerElement.focus().catch(e => logFn(`Focus failed for playerElement: ${e.message}`, 'debug')); // Catch focus error
+                    await this.page.keyboard.press('Space');
+                    logFn('Focused player/body and pressed Space key');
+                    await sleep(1000 + nodeJsRandom(300));
+                    
+                    const tempState = await this.page.evaluate(() => {
+                        const v = document.querySelector('video.html5-main-video');
+                        return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                    }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                    
+                    if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                        logFn(`Video playing after Space key. Time: ${tempState.ct?.toFixed(1)}`); 
+                        return true;
+                    }
+                }
+            } catch (e) {
+                logFn(`Failed to focus player and press Space: ${e.message}`, 'debug');
+            }
+
+            // Strategy 3: Click on video element with specific coordinates
+            try {
+                const videoElement = this.page.locator('video.html5-main-video').first();
+                if (await videoElement.isVisible({timeout: 500})) {
+                    const box = await videoElement.boundingBox();
+                    if (box && box.width > 0 && box.height > 0) { // Ensure box is valid
+                        // Click in the center of the video
+                        await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, {delay: nodeJsRandom(50,100)});
+                        logFn('Clicked center of video element');
+                        await sleep(1200 + nodeJsRandom(300));
+                        
+                        const tempState = await this.page.evaluate(() => {
+                            const v = document.querySelector('video.html5-main-video');
+                            return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                        }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                        
+                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                            logFn(`Video playing after center click. Time: ${tempState.ct?.toFixed(1)}`); 
+                            return true;
+                        }
+                    } else {
+                        logFn('Video element bounding box not valid for click.', 'debug');
+                    }
+                }
+            } catch (e) {
+                logFn(`Failed to click video center: ${e.message}`, 'debug');
+            }
+
+            // Strategy 4: Try unmuting and playing via JavaScript with user gesture simulation
+            try {
+                await this.page.evaluate(() => {
+                    const video = document.querySelector('video.html5-main-video');
+                    if (video) {
+                        if (video.muted) {
+                            video.muted = false;
+                            video.volume = 0.5;
+                        }
+                        
+                        const playPromise = video.play();
+                        if (playPromise !== undefined) {
+                            playPromise.then(() => {
+                                console.log('[In-Page] Video play() initiated successfully via JS');
+                            }).catch(error => {
+                                console.warn('[In-Page] Video play() via JS failed:', error.message, 'Trying to click video as fallback.');
+                                video.click(); // Fallback click if promise rejects
+                            });
+                        } else {
+                             console.warn('[In-Page] video.play() did not return a promise. Trying click.');
+                             video.click();
+                        }
+                    }
+                });
+                await sleep(1500 + nodeJsRandom(300));
+                
+                const tempState = await this.page.evaluate(() => {
+                    const v = document.querySelector('video.html5-main-video');
+                    return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                
+                if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                    logFn(`Video playing after JS play()/click combination. Time: ${tempState.ct?.toFixed(1)}`); 
+                    return true; 
+                }
+            } catch (e) { 
+                logFn(`JS play()/click eval error: ${e.message}`, 'debug'); 
+            }
+
+            // Strategy 5: Try keyboard 'k' key (YouTube shortcut) - Repeated for good measure after other attempts
+            try {
+                await this.page.locator('body').press('k');
+                logFn('Pressed "k" key again to toggle play/pause');
                 await sleep(1000 + nodeJsRandom(300));
-                const tempState = await this.page.evaluate(() => {const v=document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended} : {p:true,rs:0,e:true};}).catch(()=>({p:true,rs:0,e:true}));
-                if (!tempState.p && tempState.rs >=3 && !tempState.e) { 
-                    logFn('Video playing after pressing "k" key'); 
+                
+                const tempState = await this.page.evaluate(() => {
+                    const v = document.querySelector('video.html5-main-video');
+                    return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                
+                if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                    logFn(`Video playing after second "k" key. Time: ${tempState.ct?.toFixed(1)}`); 
                     return true;
                 }
             } catch (e) {
-                logFn(`Failed to press "k" key: ${e.message}`, 'debug');
+                logFn(`Failed to press "k" key (second time): ${e.message}`, 'debug');
             }
 
-            // JS play()
-            if (videoState.p && !videoState.ended) { // Only if paused
+            if (attempt === 2 && videoState.p) { // Last attempt specific logic
+                logFn('Final attempt - trying aggressive play approach', 'warn');
+                await this.page.evaluate(() => {
+                    const overlays = document.querySelectorAll('.ytp-gradient-top, .ytp-gradient-bottom, .ytp-chrome-top, .ytp-chrome-bottom, .ytp-impression-link'); // Added impression link
+                    overlays.forEach(el => el.style.display = 'none'); // More aggressive: hide them
+                }).catch((e) => { logFn(`Failed to hide overlays: ${e.message}`, 'debug')});
+
                 try {
-                    await this.page.evaluate(() => {
-                        const video = document.querySelector('video.html5-main-video');
-                        if (video && video.paused && !video.ended) {
-                            console.log('[In-Page Eval] ensureVideoPlaying: Attempting video.play()');
-                            video.play().catch(e => console.warn('[In-Page Eval] video.play() promise rejected:', e.message));
+                    const videoElement = this.page.locator('video.html5-main-video').first();
+                    if (await videoElement.isVisible({timeout: 500})) {
+                        await videoElement.dblclick({timeout: 2000, delay: nodeJsRandom(50, 150)});
+                        logFn('Double-clicked video element');
+                        await sleep(1500);
+                         const tempState = await this.page.evaluate(() => {
+                            const v = document.querySelector('video.html5-main-video');
+                            return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0};
+                        }).catch(()=>({p:true,rs:0,e:true,ct:0}));
+                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { 
+                            logFn(`Video playing after double click. Time: ${tempState.ct?.toFixed(1)}`); 
+                            return true;
                         }
-                    });
-                    await sleep(1500 + nodeJsRandom(500));
-                    const isActuallyPlayingJS = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(()=>true));
-                    const currentRSJS = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.readyState).catch(()=>0);
-                    if (isActuallyPlayingJS && currentRSJS >= 3) {
-                        logFn(`Video confirmed playing after JS play(). RS: ${currentRSJS}`); return true;
-                    } else {
-                        logFn(`Video still paused or not ready after JS play(). Paused: ${!isActuallyPlayingJS}, RS: ${currentRSJS}`, 'warn');
                     }
-                } catch (e) { logFn(`JS play() eval error: ${e.message.split('\n')[0]}`, 'debug'); }
+                } catch (e) { logFn(`Double-click failed: ${e.message}`, 'debug'); }
             }
-
-            // Click other play buttons
-            for (const selector of playButtonSelectors) {
-                 const currentPausedState = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(()=>true);
-                 if (currentPausedState && await clickIfExists(this.page, selector, 1500, this.logger)) {
-                    logFn(`Clicked potential play button: ${selector}`);
-                    await sleep(1500 + nodeJsRandom(500));
-                    const isActuallyPlayingBtn = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(()=>true));
-                    const currentRSBtn = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.readyState).catch(()=>0);
-                    if (isActuallyPlayingBtn && currentRSBtn >=3) {
-                         logFn('Video confirmed playing after play button click. RS: ' + currentRSBtn); return true;
-                    } else {
-                        logFn(`Video still paused/not ready after '${selector}' click. Paused: ${!isActuallyPlayingBtn}, RS: ${currentRSBtn}`, 'warn');
-                    }
-                }
-            }
-            
-            // Click player area (last resort)
-            const isStillPaused = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(()=>true);
-            if(isStillPaused) {
-                const playerLocators = ['video.html5-main-video', '.html5-video-player', '#movie_player'];
-                for (const playerSelector of playerLocators) {
-                    try {
-                        const playerElement = this.page.locator(playerSelector).first();
-                        if (await playerElement.isVisible({timeout: 1000})) {
-                            logFn(`Clicking player area ('${playerSelector}').`);
-                            await playerElement.click({ timeout: 1500, force: true });
-                            await sleep(1500 + nodeJsRandom(500));
-                            const isActuallyPlayingArea = !(await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.paused).catch(()=>true));
-                            const currentRSArea = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.readyState).catch(()=>0);
-                            if (isActuallyPlayingArea && currentRSArea >=3 ) {
-                                logFn(`Video confirmed playing after clicking player area ('${playerSelector}'). RS: ${currentRSArea}`);
-                                return true;
-                            } else {
-                                logFn(`Video still paused/not ready after player area click. Paused: ${!isActuallyPlayingArea}, RS: ${currentRSArea}`, 'warn');
-                            }
-                            break; 
-                        }
-                    } catch (e) { logFn(`Player area click ('${playerSelector}') error: ${e.message.split('\n')[0]}`, 'debug'); }
-                 }
-            }
-
 
             if (attempt < 2) await sleep(1500 + attempt * 500);
         }
+        
         logFn('Failed to ensure video is playing after multiple attempts.', 'warn');
         return false;
     }
 
+    // Claude: New method for playback recovery
+    async attemptPlaybackRecovery() {
+        this.logger.warn('Attempting playback recovery by reloading with autoplay parameter...');
+        
+        try {
+            const currentUrl = this.page.url();
+            const urlObj = new URL(currentUrl); // Use URL constructor
+            urlObj.searchParams.set('autoplay', '1');
+            urlObj.searchParams.set('t', '0s'); // Start from beginning
+
+            this.logger.info(`Navigating to recovery URL: ${urlObj.toString()}`);
+            await this.page.goto(urlObj.toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await sleep(2000 + nodeJsRandom(500)); // Increased sleep
+            
+            await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction: '}));
+            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 45000); // Wait for load on new page
+
+            const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
+            const success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload');
+            
+            if (success) {
+                this.logger.info('Playback recovery successful!');
+                return true;
+            }
+        } catch (e) {
+            this.logger.error(`Playback recovery failed: ${e.message}`);
+        }
+        
+        this.logger.warn('Playback recovery method did not succeed.');
+        return false;
+    }
+
+
 
     async watchVideo() {
-        // ... (Unchanged from v1.4)
+        // ... (Unchanged from v1.5, existing stall and recovery logic remains)
         if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed for watching.');
 
         const videoDurationSeconds = this.job.video_info.duration;
@@ -1039,9 +1209,9 @@ class YouTubeViewWorker {
                     if (videoState.error && videoState.error.code) {
                         this.logger.error(`Player Error Detected in watch loop: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Triggering recovery.`);
                         isStalledThisCheck = true;
-                        if (videoState.error.code === 2 /* MEDIA_ERR_NETWORK */ && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                        if (videoState.error.code === 2 && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
                             this.logger.warn("Network error (code 2) in player, will attempt recovery via stall logic.");
-                        } else if (videoState.error.code === 3 /* MEDIA_ERR_DECODE */ || videoState.error.code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
+                        } else if (videoState.error.code === 3 || videoState.error.code === 4) {
                             this.logger.error(`Fatal player error (Decode/Src). Code: ${videoState.error.code}`);
                             throw new Error(`Fatal Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
                         } else {
@@ -1086,9 +1256,9 @@ class YouTubeViewWorker {
                     consecutiveStallChecks++;
                     (this.logger.warn || this.logger.warning).call(this.logger, `Playback stalled/error detected. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls checks: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}`);
                     
-                    if (Actor.isAtHome()) { // Claude: Simplified check
+                    if (Actor.isAtHome()) {
                         try {
-                            const stallTime = new Date().toISOString().replace(/:/g, '-').replace(/\./g, '_');
+                            const stallTime = new Date().toISOString().replace(/[:.]/g, '-');
                             const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
                             this.logger.info(`Taking screenshot due to stall: ${screenshotKey}`);
                             const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
@@ -1150,6 +1320,7 @@ class YouTubeViewWorker {
                         if (recoveryActionTaken) {
                             this.logger.info(`Page re-navigated/reloaded. Re-handling consent & playback after recovery attempt ${recoveryAttemptsThisJob}...`);
                             await handleYouTubeConsent(this.page, this.logger);
+                            await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction2: '})); // Attempt interaction again
                             await waitForVideoToLoad(this.page, this.logger, 30000).catch(e => {
                                 this.logger.warn(`Video failed to load after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
                             });
@@ -1186,7 +1357,7 @@ class YouTubeViewWorker {
             }
             
             if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
-                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Using Claude's new ensureVideoPlaying
+                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
             }
             
             if (videoState && videoState.e) { this.logger.info('Video playback naturally ended.'); break; }
@@ -1322,7 +1493,7 @@ async function actorMainLogic() {
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.6 - Claude Playback/Quality Fixes).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.7 - Claude Ultra Enhanced Playback).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1498,6 +1669,7 @@ async function actorMainLogic() {
                 jobLogger.info(`Navigating to search URL: ${youtubeSearchUrl}`);
                 await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 * 0.8 });
                 await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}));
+                await enableAutoplayWithInteraction(searchPage, jobLogger.child({prefix: 'SearchAutoplay: '})); // Interaction for search page
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
@@ -1541,7 +1713,7 @@ async function actorMainLogic() {
                 jobLogger.error(`YouTube search failed: ${searchError.message}. Falling back to direct URL: ${job.videoUrl}`);
                  if (Actor.isAtHome()) {
                     try {
-                        const ssKey = `SEARCH_FAIL_${job.videoId}_${new Date().toISOString().replace(/:/g, '-')}`;
+                        const ssKey = `SEARCH_FAIL_${job.videoId}_${new Date().toISOString().replace(/[:.]/g, '-')}`; // Claude: Simplified replacement
                         if (searchPage && !searchPage.isClosed()) await Actor.setValue(ssKey, await searchPage.screenshot(), { contentType: 'image/png' });
                     } catch (e) { jobLogger.debug(`Failed to save search fail screenshot: ${e.message}`);}
                  }
@@ -1557,7 +1729,7 @@ async function actorMainLogic() {
             jobId: job.id, videoUrl: job.videoUrl, videoId: job.videoId,
             status: 'initiated', proxyUsed: proxyInfoForLog, refererRequested: job.referer,
             watchTypePerformed: job.watchType,
-            fingerprintProfileKey: Object.keys(FINGERPRINT_PROFILES).find(key => FINGERPRINT_PROFILES[key] === worker.fingerprintProfile) || 'N/A',
+            fingerprintProfileKey: worker.fingerprintProfile.profileKeyName || 'N/A',
             error: null,
             lastReportedVideoTimeSeconds: 0,
             targetVideoPlayTimeSeconds: 0,
