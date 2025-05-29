@@ -1,11 +1,8 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-// IMPORTANT: Use Playwright directly, not playwright-extra if we are disabling StealthPlugin
-// and managing all fingerprinting ourselves.
-// If playwright-extra is still used, it's fine, but we are not relying on its extra features here.
-const playwright = require('playwright'); // Or keep chromium from 'playwright-extra' if it causes no issues
-// const { chromium } = require('playwright-extra'); // Original
+// Using plain Playwright as per Gemini's v2.0 suggestion for full control
+const playwright = require('playwright'); 
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
@@ -38,11 +35,13 @@ Date.prototype.isDstActive = function(tz = "America/New_York") {
     return false;
 };
 
-// Function to get a random item from an array
+function nodeJsRandom(min, max) { // Make sure this is defined globally for profile hardwareConcurrency
+    if (max === undefined) { max = min; min = 0; }
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
 function getRandomArrayItem(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
-
 
 const FINGERPRINT_PROFILES = {
     'US_CHROME_WIN_NVIDIA_V2': {
@@ -51,7 +50,7 @@ const FINGERPRINT_PROFILES = {
         acceptLanguage: 'en-US,en;q=0.9',
         platform: 'Win32',
         deviceMemory: 8,
-        hardwareConcurrency: getRandomArrayItem([8, 12, 16]), // More common values
+        hardwareConcurrency: getRandomArrayItem([8, 12, 16]),
         vendor: 'Google Inc.',
         plugins: [
             { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
@@ -79,11 +78,11 @@ const FINGERPRINT_PROFILES = {
         deviceMemory: 16,
         hardwareConcurrency: getRandomArrayItem([6, 8, 12]),
         vendor: 'Google Inc.',
-        plugins: [ /* Can be same or slightly different */
+        plugins: [ 
             { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
             { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
         ],
-        mimeTypes: [ /* Can be same or slightly different */
+        mimeTypes: [ 
             { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
             { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
         ],
@@ -100,9 +99,9 @@ const FINGERPRINT_PROFILES = {
         acceptLanguage: 'en-US,en;q=0.9',
         platform: 'MacIntel',
         deviceMemory: 16,
-        hardwareConcurrency: getRandomArrayItem([8, 10, 12]), // M-series have various core counts
+        hardwareConcurrency: getRandomArrayItem([8, 10, 12]),
         vendor: 'Apple Computer, Inc.',
-         plugins: [ // Macs often have fewer default-like plugins visible this way
+         plugins: [
             { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
         ],
         mimeTypes: [
@@ -111,9 +110,9 @@ const FINGERPRINT_PROFILES = {
         locale: 'en-US',
         timezoneId: 'America/Los_Angeles',
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 420 : 480; },
-        screen: { width: 2560, height: 1600, availWidth: 2560, availHeight: 1570, colorDepth: 24, pixelDepth: 24 }, // Common MacBook Retina
-        webGLVendor: 'Apple', // Or 'Google Inc. (Apple)'
-        webGLRenderer: 'Apple M2 Pro', // Example
+        screen: { width: 1728, height: 1117, availWidth: 1728, availHeight: 1079, colorDepth: 30, pixelDepth: 30 },
+        webGLVendor: 'Apple',
+        webGLRenderer: 'Apple M2 Pro',
     },
 };
 
@@ -139,17 +138,7 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
 
-// Gemini: StealthPlugin is DISABLED for this v2.0 test
-// try {
-//     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
-//     chromium.use(StealthPlugin());
-//     console.log('MAIN.JS: StealthPlugin applied successfully (v1.9.2).');
-// } catch (e) {
-//     console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
-//     throw e;
-// }
 console.log('MAIN.JS: StealthPlugin application SKIPPED for v2.0 Unified Fingerprinting test.');
-
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function getSafeLogger(loggerInstance) { /* ... (unchanged) ... */
@@ -214,10 +203,6 @@ function extractVideoIdFromUrl(url, logger) { /* ... (unchanged) ... */
     (safeLogger.warn || safeLogger.warning).call(safeLogger, `Could not extract valid YouTube video ID from: ${url}`);
     return null;
 }
-function nodeJsRandom(min, max) { /* ... (unchanged) ... */
-    if (max === undefined) { max = min; min = 0; }
-    return Math.floor(Math.random() * (max - min + 1)) + min;
-}
 async function handleYouTubeConsent(page, logger) { /* ... (unchanged) ... */
     const safeLogger = getSafeLogger(logger);
     safeLogger.info('Checking for YouTube consent dialog...');
@@ -250,23 +235,19 @@ async function handleYouTubeConsent(page, logger) { /* ... (unchanged) ... */
     return false;
 }
 
-// ANTI_DETECTION_ARGS will be generated by generateBrowserLaunchAndContextOptions
-
-// applyAntiDetectionScripts is replaced by the initScript within generateBrowserLaunchAndContextOptions
+// applyAntiDetectionScripts is effectively replaced by the initScript in generateBrowserLaunchAndContextOptions
+// So, this function will no longer be called.
 
 // Gemini v2.0: New Unified Function
 function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInput, baseLogger) {
     const logger = getSafeLogger(baseLogger);
-    logger.info(`Generating launch/context options for profile: ${fingerprintProfile.profileKeyName}`);
+    logger.info(`Generating launch/context options for profile: ${fingerprintProfile.profileKeyName || 'UnknownProfile'}`);
 
-    // Ensure profile getters are resolved before stringifying for the init script
-    const profileForScript = {
+    const profileForScript = { // Ensure getters are resolved
         ...fingerprintProfile,
-        timezoneOffsetMinutes: fingerprintProfile.timezoneOffsetMinutes, // Explicitly call getter
-        hardwareConcurrency: fingerprintProfile.hardwareConcurrency, // Resolve random if it's a getter
-        // Note: deviceMemory is already a fixed number in the example profiles
+        timezoneOffsetMinutes: fingerprintProfile.timezoneOffsetMinutes,
+        hardwareConcurrency: fingerprintProfile.hardwareConcurrency,
     };
-
 
     const launchArgs = [
         '--disable-blink-features=AutomationControlled,LegacyForceDark',
@@ -282,29 +263,29 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
         '--use-mock-keychain',
         '--force-webrtc-ip-handling-policy=default_public_interface_only',
         `--lang=${profileForScript.locale}`,
-        '--disable-features=InterestGroupStorage,PrivacySandboxAdsAPIs,WebRTC-HideLocalIpsWithMdns', // Added another WebRTC related one
+        '--disable-features=InterestGroupStorage,PrivacySandboxAdsAPIs,WebRTC-HideLocalIpsWithMdns',
     ];
 
     const contextOptions = {
         userAgent: profileForScript.userAgent,
         locale: profileForScript.locale,
         timezoneId: profileForScript.timezoneId,
-        screen: { 
+        screen: {
             width: profileForScript.screen.width,
             height: profileForScript.screen.height
         },
-        viewport: { 
+        viewport: {
             width: profileForScript.screen.width,
             height: profileForScript.screen.height
         },
         deviceScaleFactor: (profileForScript.screen.width > 2000 || profileForScript.screen.height > 1200) ? 1.5 : 1,
         isMobile: false,
         hasTouch: false,
-        acceptDownloads: false, // Typically false for viewing bots
+        acceptDownloads: false,
         bypassCSP: true,
         ignoreHTTPSErrors: true,
         javaScriptEnabled: true,
-        permissions: ['geolocation', 'notifications'], // Keep minimal, initScript will grant more if needed
+        permissions: ['geolocation', 'notifications'],
         geolocation: effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
                      effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
                      effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
@@ -313,23 +294,23 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
         }
     };
 
-    const scriptToInject = `(${((fpArgs) => {
+    const initScript = `(${((fpArgs) => {
         const {
             dynamicLocale, dynamicTimezoneOffset, dynamicPlatform, dynamicVendor,
             dynamicWebGLVendor, dynamicWebGLRenderer, dynamicDeviceMemory, dynamicHardwareConcurrency,
             dynamicScreen, dynamicPlugins, dynamicMimeTypes, uaString
         } = fpArgs;
 
-        const _uuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        // In-page UUID and random string generator for self-containment
+        const _pageUuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
             const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
-        const _generateRandomString = (length) => {
+        const _pageGenerateRandomString = (length) => {
             let result = ''; const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
             for (let i = 0; i < length; i++) result += characters.charAt(Math.floor(Math.random() * characters.length));
             return result;
         };
-
 
         // --- Core WebDriver Evasion ---
         if (navigator.webdriver === true) try { Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e){}
@@ -358,11 +339,9 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
         // --- WebGL ---
         try {
             const getParameterProxy = function(parameter) {
-                if (this.canvas && this.canvas.id === 'webgl-fingerprint-canvas-alt') return WebGLRenderingContext.prototype.getParameter.apply(this, arguments); // Example for specific canvas
-                if (parameter === 37445 /* UNMASKED_VENDOR_WEBGL */) return dynamicWebGLVendor;
-                if (parameter === 37446 /* UNMASKED_RENDERER_WEBGL */) return dynamicWebGLRenderer;
-                // if (fpArgs.webGLVersion && parameter === this.VERSION) return fpArgs.webGLVersion;
-                // if (fpArgs.shadingLanguageVersion && parameter === this.SHADING_LANGUAGE_VERSION) return fpArgs.shadingLanguageVersion;
+                if (this.canvas && this.canvas.id === 'webgl-fingerprint-canvas-alt') return WebGLRenderingContext.prototype.getParameter.apply(this, arguments);
+                if (parameter === 37445) return dynamicWebGLVendor;
+                if (parameter === 37446) return dynamicWebGLRenderer;
                 return WebGLRenderingContext.prototype.getParameter.apply(this, arguments);
             };
             WebGLRenderingContext.prototype.getParameter = getParameterProxy;
@@ -374,10 +353,10 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
                 const { width, height } = this;
-                if (width > 0 && height > 0 && this.id !== 'canvas-noise-skip') { // Allow skipping for specific canvases
+                if (width > 0 && height > 0 && this.id !== 'canvas-noise-skip') {
                     const ctx = this.getContext('2d');
                     if (ctx) {
-                        const randomVal = Math.floor(Math.random() * 3) -1; // -1, 0, or 1
+                        const randomVal = Math.floor(Math.random() * 3) -1;
                         if (randomVal !== 0) {
                             try {
                                 const imageData = ctx.getImageData(0,0,width,height);
@@ -387,7 +366,7 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
                                     imageData.data[i+2] = Math.max(0, Math.min(255, imageData.data[i+2] + randomVal));
                                 }
                                 ctx.putImageData(imageData,0,0);
-                            } catch(e) { /* ignore read-only canvases or other errors */ }
+                            } catch(e) { /* ignore */ }
                         }
                     }
                 }
@@ -401,7 +380,7 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
                 const plugin = { name: p.name, filename: p.filename, description: p.description, length: 0 };
                 plugin.item = () => undefined;
                 plugin.namedItem = () => undefined;
-                return Object.freeze(plugin); // Freeze individual plugins
+                return Object.freeze(plugin);
              };
              const pluginArray = Object.freeze(dynamicPlugins.map(p => makePlugin(p)));
              const mimeTypeArray = Object.freeze(dynamicMimeTypes.map(m => Object.freeze({ type: m.type, suffixes: m.suffixes, description: m.description, enabledPlugin: pluginArray.find(p => p.description === m.description || p.name.includes(m.type.split('/')[1])) || pluginArray[0] || null })));
@@ -426,7 +405,7 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
         const propsToDelete = ['__selenium_unwrapped', '__webdriver_evaluate', '__driver_evaluate',
                                '__webdriver_script_function', '__webdriver_script_func', '__webdriver_script_fn',
                                '_phantom', '__nightmare', '_selenium', 'callPhantom', 'callSelenium', '_Selenium_IDE_Recorder',
-                               '$cdc_asdjflasutopfhvcZLmcfl_']; // Common CDC flag
+                               '$cdc_asdjflasutopfhvcZLmcfl_'];
         objectsToClean.forEach(obj => {
             propsToDelete.forEach(prop => {
                 if (obj && typeof obj === 'object' && prop in obj) { try { delete obj[prop]; } catch(e){} }
@@ -434,8 +413,7 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
         });
         if (window.__playwright_script_needle__) try { delete window.__playwright_script_needle__; } catch(e){}
 
-
-        // --- RTC (Minimal STUN server, can be expanded) ---
+        // --- RTC ---
         if (window.RTCPeerConnection) {
             const originalRTCPeerConnection = RTCPeerConnection;
             window.RTCPeerConnection = function(config) {
@@ -447,34 +425,32 @@ function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInp
             try { window.RTCPeerConnection.prototype = originalRTCPeerConnection.prototype; } catch(e){}
         }
 
-        // --- User Agent (ensure consistency) ---
+        // --- User Agent ---
         if (navigator.userAgent !== uaString) {
             try { Object.defineProperty(navigator, 'userAgent', { get: () => uaString, configurable: true }); } catch(e){}
         }
         
-        // --- Media Devices (Claude's simplified version) ---
+        // --- Media Devices ---
         if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
             navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
-                { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'defaultgroup_' + _generateRandomString(8) },
-                { deviceId: _uuidv4(), kind: 'videoinput', label: 'Integrated Camera', groupId: 'videogroup_' + _generateRandomString(8) },
-                { deviceId: _uuidv4(), kind: 'audioinput', label: 'Internal Microphone', groupId: 'audiogroup_' + _generateRandomString(8) }
+                { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'defaultgroup_' + _pageGenerateRandomString(8) },
+                { deviceId: _pageUuidv4(), kind: 'videoinput', label: 'Integrated Camera', groupId: 'videogroup_' + _pageGenerateRandomString(8) },
+                { deviceId: _pageUuidv4(), kind: 'audioinput', label: 'Internal Microphone', groupId: 'audiogroup_' + _pageGenerateRandomString(8) }
             ]);
         }
 
-        // --- Autoplay Policy & User Activation (Claude's suggestions) ---
+        // --- Autoplay Policy & User Activation ---
         try { Object.defineProperty(navigator, 'getAutoplayPolicy', { value: (type) => 'allowed', configurable: true }); } catch(e){}
         try { Object.defineProperty(navigator, 'userActivation', { get: () => ({ hasBeenActive: true, isActive: true }), configurable: true }); } catch(e){}
 
-
-        // --- Protect console.debug ---
          try {
              const d = console.debug;
              Object.defineProperty(console, 'debug', { value: d, writable: false, configurable: false });
          } catch(e){}
 
-    }).toString()})(${JSON.stringify(profileForScript)});`; // Pass resolved profile data
+    }).toString()})(${JSON.stringify(profileForScript)});`;
 
-    logger.info(`Generated comprehensive initScript, length: ${scriptToInject.length}`);
+    logger.info(`Generated comprehensive initScript, length: ${initScript.length}`);
     return { launchArgs, contextOptions, initScript };
 }
 
@@ -600,7 +576,7 @@ class YouTubeViewWorker {
             this.logger.warn = this.logger.warning;
         }
 
-        this.fingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry); // This will now use the more detailed profiles
+        this.fingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
         this.logger.info(`Selected Fingerprint Profile: Key Hint=${this.fingerprintProfile.profileKeyName || 'N/A'}, UA=${this.fingerprintProfile.userAgent.substring(0,70)}..., Locale=${this.fingerprintProfile.locale}, TZID=${this.fingerprintProfile.timezoneId}, Vendor=${this.fingerprintProfile.vendor}`);
         
         this.killed = false;
@@ -632,7 +608,7 @@ class YouTubeViewWorker {
         
         const { launchArgs, contextOptions, initScript } = generateBrowserLaunchAndContextOptions(
             this.fingerprintProfile,
-            this.effectiveInput, // Pass effectiveInput for geolocation decision
+            this.effectiveInput,
             this.logger
         );
 
@@ -644,7 +620,8 @@ class YouTubeViewWorker {
         if (this.proxyUrlString) {
             try {
                 const parsedProxy = new URL(this.proxyUrlString);
-                finalLaunchOptions.proxy = { // Playwright's direct way of setting proxy for the browser
+                // Playwright handles proxy via launch options, not context options directly for browser-level proxy
+                finalLaunchOptions.proxy = {
                     server: `${parsedProxy.protocol}//${parsedProxy.hostname}:${parsedProxy.port}`,
                     username: parsedProxy.username ? decodeURIComponent(parsedProxy.username) : undefined,
                     password: parsedProxy.password ? decodeURIComponent(parsedProxy.password) : undefined,
@@ -656,8 +633,7 @@ class YouTubeViewWorker {
             }
         }
 
-        // Using playwright.chromium.launch directly (ensure 'playwright' is required)
-        this.browser = await playwright.chromium.launch(finalLaunchOptions);
+        this.browser = await playwright.chromium.launch(finalLaunchOptions); // Using plain playwright
         this.logger.info('Browser launched directly with Playwright (StealthPlugin NOT used for v2.0).');
 
         this.context = await this.browser.newContext(contextOptions);
@@ -667,22 +643,22 @@ class YouTubeViewWorker {
             await this.context.addInitScript(initScript);
             this.logger.info('Comprehensive fingerprint initScript added to context.');
         } else {
-            this.logger.warn('No initScript was generated or applied.');
+             // This case should ideally not happen if generateBrowserLaunchAndContextOptions always returns a script
+            this.logger.warn('No initScript was generated or applied. This is unexpected for v2.0.');
         }
 
 
         if (this.job.referer) {
-            this.logger.info(`Setting referer: ${this.job.referer}`);
-            // Note: extraHTTPHeaders is a context option, not settable after creation like this
-            // It's now part of contextOptions in generateBrowserLaunchAndContextOptions
-            // await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer }); // This line should be removed
+            this.logger.info(`Setting referer via context option (extraHTTPHeaders): ${this.job.referer}`);
+            // Referer is now part of contextOptions.extraHTTPHeaders
         }
         this.page = await this.context.newPage();
         this.logger.info('New page created.');
         
         this.page.on('console', msg => {
-            if (msg.type() === 'error' || msg.type() === 'warn' || msg.text().startsWith('[FP]')) { // Log FP debug messages too
-                this.logger.debug(`PAGE_CONSOLE (${msg.type().toUpperCase()}): ${msg.text().substring(0, 250)}`);
+            const text = msg.text();
+            if (msg.type() === 'error' || msg.type() === 'warn' || text.startsWith('[FP]')) {
+                this.logger.debug(`PAGE_CONSOLE (${msg.type().toUpperCase()}): ${text.substring(0, 300)}`); // Increased length
             }
         });
 
@@ -792,7 +768,7 @@ class YouTubeViewWorker {
         return adWasPlayingThisCheckCycle;
     }
     
-    // Using Gemini's SIMPLIFIED ensureVideoPlaying
+    // Using Gemini's SIMPLIFIED ensureVideoPlaying (v1.9.2)
     async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
             const loggerMethod = this.logger && typeof this.logger[level] === 'function' ? this.logger[level] : console[level] || console.log;
@@ -1203,7 +1179,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.2 - Pure Stealth Focus + Refined Stall Logic).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v2.0 - Unified Fingerprinting).'); // Updated version for this major change
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1221,7 +1197,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
-        customAntiDetection: false, // Set to false to test "Pure Stealth"
+        customAntiDetection: true, // For v2.0, this flag is less about enabling/disabling scripts and more about the *level* of detail if we add options later
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
     effectiveInput.headless = !!effectiveInput.headless;
@@ -1344,42 +1320,34 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             jobLogger.info(`Attempting YouTube search for: "${job.searchKeywords.join(', ')}" to find ID: ${job.videoId}`);
             let searchBrowser = null, searchContext = null, searchPage = null;
-            const searchLaunchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] }; 
-             if (searchLaunchOptions.args.find(arg => arg.startsWith('--window-size='))) {
-                searchLaunchOptions.args = searchLaunchOptions.args.filter(arg => !arg.startsWith('--window-size='));
-            }
+            
+            // Use generateBrowserLaunchAndContextOptions for search browser
+            const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry); // Get a base profile
+            searchFingerprintProfile.userAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)]; // Override UA for search
+            // For search, we might want a simpler initScript or fewer context overrides than for the main worker.
+            // For v2.0 test, let's use the same comprehensive generation but be mindful it might be overkill for search.
+            const { launchArgs: searchLaunchArgs, contextOptions: searchContextOptions, initScript: searchInitScript } = 
+                generateBrowserLaunchAndContextOptions(searchFingerprintProfile, effectiveInput, jobLogger.child({prefix: 'SearchSetup: '}));
+            
+            const finalSearchLaunchOptions = {
+                headless: effectiveInput.headless,
+                args: searchLaunchArgs
+            };
 
-            if(proxyUrlString) {
-                try {
+            if(proxyUrlString) { // Apply proxy to search launch options if needed
+                 try {
                     const p = new URL(proxyUrlString);
-                    searchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
+                    finalSearchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
                 } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
             }
+
             try {
-                const searchUserAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)];
-                searchBrowser = await chromium.launch(searchLaunchOptions); // Use 'chromium' from playwright-extra if not using plain 'playwright'
-                
-                const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
-                searchFingerprintProfile.userAgent = searchUserAgent;
-                searchLaunchOptions.args.push(`--window-size=${searchFingerprintProfile.screen.width},${searchFingerprintProfile.screen.height}`);
-
-
-                searchContext = await searchBrowser.newContext({ 
-                    userAgent: searchFingerprintProfile.userAgent,
-                    locale: searchFingerprintProfile.locale,
-                    timezoneId: searchFingerprintProfile.timezoneId,
-                    screen: {
-                        width: searchFingerprintProfile.screen.width,
-                        height: searchFingerprintProfile.screen.height,
-                    },
-                    viewport: {
-                        width: searchFingerprintProfile.screen.width,
-                        height: searchFingerprintProfile.screen.height,
-                    },
-                    ignoreHTTPSErrors: true,
-                });
-
-                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED entirely for v1.9.2 test.');
+                searchBrowser = await playwright.chromium.launch(finalSearchLaunchOptions);
+                searchContext = await searchBrowser.newContext(searchContextOptions);
+                if (searchInitScript) {
+                    await searchContext.addInitScript(searchInitScript);
+                    jobLogger.info('Search Context: Comprehensive fingerprint initScript added.');
+                }
 
 
                 searchPage = await searchContext.newPage();
@@ -1390,7 +1358,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
                 await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
                 await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}));
                 
-                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.9.2).');
+                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v2.0).');
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
