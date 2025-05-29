@@ -1,12 +1,13 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-// Using plain Playwright to ensure no interference if StealthPlugin is indeed disabled
+// Using plain Playwright as StealthPlugin will be SKIPPED
 const playwright = require('playwright'); 
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
 // --- Fingerprint Profiles ---
+// (Kept for context options like UA, locale, timezone, screen. JS parts won't be injected by applyAntiDetectionScripts)
 Date.prototype.isDstActive = function(tz = "America/New_York") {
     const now = new Date(this.valueOf());
     const currentYear = now.getFullYear();
@@ -48,17 +49,17 @@ const FINGERPRINT_PROFILES = {
         profileKeyName: 'US_CHROME_WIN_NVIDIA',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         acceptLanguage: 'en-US,en;q=0.9',
-        platform: 'Win32',
-        deviceMemory: 8,
-        hardwareConcurrency: getRandomArrayItem([8, 12, 16]),
-        vendor: 'Google Inc.',
-        plugins: [ /* Minimal as StealthPlugin is off, these won't be injected by custom script in this version */ ],
-        mimeTypes: [ /* Minimal */ ],
+        platform: 'Win32', // For potential context override if needed by something else
+        deviceMemory: 8,    // Not actively used in initScript if it's skipped
+        hardwareConcurrency: getRandomArrayItem([8, 12, 16]), // Not actively used
+        vendor: 'Google Inc.', // Not actively used
+        plugins: [],
+        mimeTypes: [],
         locale: 'en-US',
         timezoneId: 'America/New_York',
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 240 : 300; },
         screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-        webGLVendor: 'Google Inc. (NVIDIA)',
+        webGLVendor: 'Google Inc. (NVIDIA)', // Not actively used by initScript if skipped
         webGLRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)',
     },
     'GB_CHROME_WIN_AMD': {
@@ -119,8 +120,8 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
 
-// StealthPlugin is SKIPPED for this version (to match build b0zDz9AEx6U1cx1N2 state)
-console.log('MAIN.JS: StealthPlugin application SKIPPED for v1.9.3 (replicating b0zDz9AEx6U1cx1N2 baseline).');
+// StealthPlugin is SKIPPED for this version to replicate `build b0zDz9AEx6U1cx1N2` conditions
+console.log('MAIN.JS: StealthPlugin application SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).');
 
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -218,25 +219,27 @@ async function handleYouTubeConsent(page, logger) { /* ... (unchanged) ... */
     return false;
 }
 
-// Using ABSOLUTE_MINIMAL_ARGS for this v1.9.3 test, as it was for build b0zDz9AEx6U1cx1N2
+// Using ABSOLUTE_MINIMAL_ARGS to replicate `build b0zDz9AEx6U1cx1N2`
 const ANTI_DETECTION_ARGS = [
     '--disable-blink-features=AutomationControlled',
     '--no-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
-    '--mute-audio',
+    '--mute-audio', // This was present in the v1.8.1 simplified args
     '--ignore-certificate-errors',
+    // The STABLE_ARGS also included --no-first-run, --no-service-autorun, --password-store=basic, --use-mock-keychain
+    // Let's stick to the even more minimal set that was implied by the v1.8.1 logs where scripts were SKIPPED.
+    // If needed, we can add back the above common ones.
 ];
 
-// applyAntiDetectionScripts call will be SKIPPED, so the function can be minimal or empty
+// applyAntiDetectionScripts call will be SKIPPED to replicate `build b0zDz9AEx6U1cx1N2`
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`Custom anti-detection scripts SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).`);
-    // No actual script injection in this version to match the successful load baseline
 }
 
 
-async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.8.1 / build b0zDz9AEx6U1cx1N2 state) ... */
+async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.8.1, which was working) ... */
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`[waitForVideoToLoad] Starting wait for up to ${maxWaitMs / 1000}s.`);
     const startTime = Date.now();
@@ -332,25 +335,12 @@ async function clickIfExists(page, selector, timeout = 3000, logger) { /* ... (u
     }
 }
 
-// enableAutoplayWithInteraction function from Claude - will be SKIPPED in startWorker for now
+// enableAutoplayWithInteraction function (from Claude) - REMAINS COMMENTED OUT
+/*
 async function enableAutoplayWithInteraction(page, logger) {
-    const safeLogger = getSafeLogger(logger);
-    safeLogger.info('Performing initial interaction to enable autoplay...');
-    try {
-        await page.mouse.click(100 + nodeJsRandom(0,50), 100 + nodeJsRandom(0,50), {delay: nodeJsRandom(50,150)});
-        await sleep(100 + nodeJsRandom(0,50));
-        await page.locator('body').click({position: {x: 50 + nodeJsRandom(0,20), y: 50 + nodeJsRandom(0,20)}, delay: nodeJsRandom(50,100) });
-        await sleep(100 + nodeJsRandom(0,50));
-        await page.evaluate(() => {
-            if (navigator.mediaSession) {
-                try { navigator.mediaSession.setActionHandler('play', () => {}); } catch(e) { console.warn("Error setting mediaSession play handler", e); }
-            }
-        });
-        safeLogger.info('Initial interaction completed');
-    } catch (e) {
-        safeLogger.warn(`Initial interaction failed: ${e.message}`);
-    }
+    // ...
 }
+*/
 
 class YouTubeViewWorker {
     constructor(job, effectiveInput, proxyUrlString, baseLogger) { /* ... (unchanged) ... */
@@ -407,7 +397,7 @@ class YouTubeViewWorker {
         const launchOptions = {
             headless: this.effectiveInput.headless,
             args: [
-                ...ANTI_DETECTION_ARGS, // Using ABSOLUTE_MINIMAL_ARGS from v1.8.1 successful load
+                ...ANTI_DETECTION_ARGS, // Using ABSOLUTE_MINIMAL_ARGS
                 `--window-size=${this.fingerprintProfile.screen.width},${this.fingerprintProfile.screen.height}`
             ],
         };
@@ -426,11 +416,10 @@ class YouTubeViewWorker {
             }
         }
 
-        // Using playwright.chromium.launch as StealthPlugin is disabled
-        this.browser = await playwright.chromium.launch(launchOptions);
+        this.browser = await playwright.chromium.launch(launchOptions); // Using plain playwright
         this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.3).');
 
-        // Using SIMPLIFIED context options from v1.8.1 successful load
+        // Using SIMPLIFIED context options from v1.8.1 successful load baseline
         this.context = await this.browser.newContext({
             userAgent: this.fingerprintProfile.userAgent,
             locale: this.fingerprintProfile.locale,
@@ -444,21 +433,24 @@ class YouTubeViewWorker {
                 height: this.fingerprintProfile.screen.height
             },
             ignoreHTTPSErrors: true,
-            bypassCSP: true, // Keep
-            javaScriptEnabled: true, // Keep
-            permissions: ['geolocation', 'notifications'], // Keep minimal
+            bypassCSP: true,
+            javaScriptEnabled: true,
+            permissions: ['geolocation', 'notifications'],
             geolocation: this.effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
                          this.effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
                          this.effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
-            deviceScaleFactor: (this.fingerprintProfile.screen.width > 1920 || this.fingerprintProfile.screen.height > 1080) ? 1.5 : 1, // Keep
-            isMobile: false, // Keep
-            hasTouch: false, // Keep
-            // colorScheme, reducedMotion removed for simplicity
+            deviceScaleFactor: (this.fingerprintProfile.screen.width > 1920 || this.fingerprintProfile.screen.height > 1080) ? 1.5 : 1,
+            isMobile: false,
+            hasTouch: false,
         });
         this.logger.info(`Browser context created (SIMPLIFIED for v1.9.3). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
 
-        // applyAntiDetectionScripts call is SKIPPED for this version
-        this.logger.info('Custom anti-detection scripts SKIPPED for v1.9.3 (replicating b0zDz9AEx6U1cx1N2 baseline).');
+        // applyAntiDetectionScripts call is SKIPPED
+        if (this.effectiveInput.customAntiDetection) { // Still check flag, but function does nothing
+             await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile);
+        } else {
+            this.logger.info('Custom anti-detection scripts SKIPPED as per effectiveInput (v1.9.3).');
+        }
 
 
         if (this.job.referer) {
@@ -481,7 +473,6 @@ class YouTubeViewWorker {
         await handleYouTubeConsent(this.page, this.logger);
         await sleep(nodeJsRandom(2000, 4000));
 
-        // enableAutoplayWithInteraction call remains SKIPPED
         this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.3).');
 
 
@@ -515,7 +506,7 @@ class YouTubeViewWorker {
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Attempting to ensure video is playing after load (quality setting skipped)...');
-        // Using Claude's "Ultra Enhanced" v1.6 ensureVideoPlaying, as it was in the successful b0zDz9AEx6U1cx1N2 run
+        // Using Claude's "Ultra Enhanced" v1.6 ensureVideoPlaying
         const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-ultra-enhanced-v1.6-retest'); 
         
         if (!initialPlaySuccess) {
@@ -752,7 +743,7 @@ class YouTubeViewWorker {
             await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 45000);
 
             const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
-            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay');
+            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay'); // This will use Claude's "Ultra Enhanced"
             
             if (success) {
                 this.logger.info('Playback recovery successful!');
@@ -903,13 +894,13 @@ class YouTubeViewWorker {
                  }
 
                 if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds && !isStalledThisCheck) {
-                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Using simplified ensureVideoPlaying
+                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Uses Claude's "Ultra Enhanced"
                     if (!playAttemptSuccess) {
                         this.logger.warn(`ensureVideoPlaying failed to resume playback from paused state. RS: ${videoState.rs}, CT: ${currentActualVideoTime.toFixed(1)}s.`);
-                        if (videoState.rs === 0 || videoState.networkState === 3) { // Gemini: Check if it's RS:0 or NS:3
+                        if (videoState.rs === 0 || videoState.networkState === 3) {
                             this.logger.warn(`Critical stall (RS:0 or NS:3) detected by ensureVideoPlaying failure from paused state. Forcing recovery check.`);
                             isStalledThisCheck = true; 
-                            consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY; // Force recovery
+                            consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY; 
                         } else {
                             isStalledThisCheck = true; 
                         }
@@ -926,7 +917,7 @@ class YouTubeViewWorker {
                     consecutiveStallChecks++; 
                     (this.logger.warn || this.logger.warning).call(this.logger, `Playback stall detected OR ensureVideoPlaying failed. Stalls checks: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}, CT: ${currentActualVideoTime.toFixed(1)}`);
                     
-                    if (Actor.isAtHome()) { /* ... screenshot logic from v1.7 ... */ 
+                    if (Actor.isAtHome()) { /* ... screenshot logic ... */ 
                         try {
                             const stallTime = new Date().toISOString().replace(/[:.]/g, '-');
                             const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
@@ -1100,7 +1091,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.3 - Back to Stealth + Minimal Scripts, loopNumber fix).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.3 - Replicating b0zDz9AEx6U1cx1N2 principles + loopNumber Fix).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1118,7 +1109,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
-        customAntiDetection: true, 
+        customAntiDetection: true, // For this test, this means SKIPPING custom JS injections
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
     effectiveInput.headless = !!effectiveInput.headless;
@@ -1254,7 +1245,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
             }
             try {
                 const searchUserAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)];
-                searchBrowser = await chromium.launch(searchLaunchOptions);
+                searchBrowser = await playwright.chromium.launch(searchLaunchOptions); // Using plain playwright for search too
                 
                 const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
                 searchFingerprintProfile.userAgent = searchUserAgent;
@@ -1276,12 +1267,8 @@ async function actorMainLogic() { /* ... (unchanged) ... */
                     ignoreHTTPSErrors: true,
                 });
 
-                // Using STEALTH_COMPLEMENTARY for search as well for consistency
-                if (effectiveInput.customAntiDetection) {
-                     await applyAntiDetectionScripts(searchContext, jobLogger.child({prefix: 'SearchAntiDetect: '}), searchFingerprintProfile);
-                } else {
-                    jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED as per effectiveInput (v1.9.3).');
-                }
+                // Custom scripts are skipped for search in this configuration
+                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).');
 
 
                 searchPage = await searchContext.newPage();
