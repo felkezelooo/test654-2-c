@@ -212,104 +212,101 @@ function extractVideoIdFromUrl(url, logger) {
 async function handleYouTubeConsent(page, logger, attempt = 1, maxAttempts = 2) {
     const safeLogger = getSafeLogger(logger);
     const currentUrl = page.url();
-    safeLogger.info(`Checking for YouTube consent (attempt ${attempt}/${maxAttempts}). URL: ${currentUrl.substring(0,100)}`);
-    
-    const popUpConsentButtonSelectors = [
-        'button[aria-label*="Accept all"]', 'button[aria-label*="Accept the use of cookies"]',
-        'button[aria-label*="Agree to all"]', 'button[aria-label*="Agree"]',
-        'ytd-button-renderer:has-text("Accept all")', 'tp-yt-paper-button:has-text("ACCEPT ALL")',
-        '#introAgreeButton', 'button:has(span:text-is("Accept all"))', 
-    ];
-    const formConsentButtonSelectors = [ // For consent.youtube.com pages
-        'form[action*="consent.youtube.com/save"] button:has(span:text-is("Confirm settings"))', // Note: "Confirm your settings" might be too long
-        'form[action*="consent.youtube.com/save"] button:has(span:text-is("Confirm"))',
-        'form[action*="consent.youtube.com/save"] button[jsname="j6LnYe"]', // jsname for "Confirm"
-        'form[action*="consent.youtube.com/save"] button[aria-label*="Accept"]',
-        'form[action*="consent.youtube.com/save"] button[type="submit"]', 
-    ];
-    
-    const consentDialogSelector = 'ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"], div[aria-modal="true"]:has(h1:text-matches(/Before you continue/i)), div[class*="consent-form"], form[action*="consent.youtube.com"]';
-    const consentVisibilityTimeout = 5000; // Shorter timeout for visibility checks
+    safeLogger.info(`Consent check (attempt ${attempt}/${maxAttempts}) on URL: ${currentUrl.substring(0, 100)}`);
 
-    let pageOrFrame = page;
+    const consentDialogSelector = 'ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"], div[aria-modal="true"]:has(h1:text-matches(/Before you continue/i)), form[action*="consent.youtube.com"]';
+    const isFullConsentPage = currentUrl.includes('consent.youtube.com/d') || currentUrl.includes('consent.youtube.com/ml');
+
+    let pageOrFrame = page; // Assume main frame first
     const iframes = page.frames();
     for (const frame of iframes) {
         try {
             if (frame.url().includes('consent.youtube.com')) {
-                safeLogger.info('Consent related URL detected in an iframe. Attempting to interact with iframe content.');
-                pageOrFrame = frame; // Switch context to this iframe
+                safeLogger.info('Consent form detected within an iframe. Switching context.');
+                pageOrFrame = frame;
                 break;
             }
         } catch (iframeError) {
-            safeLogger.debug(`Error accessing iframe URL: ${iframeError.message.split('\n')[0]}`);
+            safeLogger.debug(`Error checking iframe URL for consent: ${iframeError.message.split('\n')[0]}`);
         }
-    }
-
-    let consentDialogElement = pageOrFrame.locator(consentDialogSelector).first();
-    let dialogIsVisible = false;
-    try {
-        dialogIsVisible = await consentDialogElement.isVisible({ timeout: consentVisibilityTimeout });
-    } catch (e) { safeLogger.debug(`Consent dialog visibility check error: ${e.message.split('\n')[0]}`); }
-
-    if (dialogIsVisible) {
-        safeLogger.info('Consent dialog/form element IS visible.');
-        const isOnFullConsentPage = pageOrFrame.url().includes('consent.youtube.com');
-        const selectorsToTry = isOnFullConsentPage ? formConsentButtonSelectors.concat(popUpConsentButtonSelectors) : popUpConsentButtonSelectors;
-
-        for (const selector of selectorsToTry) {
-            try {
-                const button = pageOrFrame.locator(selector).first();
-                if (await button.isVisible({ timeout: 3000 })) {
-                    safeLogger.info(`Consent button found: "${selector}". Attempting to click.`);
-                    if (isOnFullConsentPage) {
-                        await Promise.all([
-                            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
-                                safeLogger.warn(`Navigation from consent page did not complete as expected: ${e.message.split('\n')[0]}`);
-                            }),
-                            button.click({ timeout: 5000, force: true })
-                        ]);
-                    } else {
-                        await button.click({ timeout: 5000, force: true });
-                    }
-                    await sleep(3000 + nodeJsRandom(1000)); // Increased wait after click
-                    safeLogger.info('Consent button clicked.');
-
-                    // Check if we successfully navigated away from a full consent page OR if the popup is gone
-                    const mainPageContext = page.parentFrame() || page;
-                    const finalUrl = mainPageContext.url();
-                    if (!finalUrl.includes('consent.youtube.com')) {
-                        safeLogger.info(`Successfully navigated to/remained on: ${finalUrl.substring(0,80)}`);
-                        return true;
-                    }
-                    // Re-check if the dialog is gone on the current context (might still be main page for popups)
-                    if (!await mainPageContext.locator(consentDialogSelector).first().isVisible({ timeout: 2000 }).catch(() => false)) {
-                        safeLogger.info('Consent dialog successfully dismissed (no longer visible).');
-                        return true;
-                    }
-                    safeLogger.warn('Clicked consent, but still on consent page or dialog visible.');
-                    // If we are still on consent.youtube.com, this click might have been a step, not the final one.
-                    // Let's retry handleYouTubeConsent from the current state if we are on consent.youtube.com.
-                    if (mainPageContext.url().includes('consent.youtube.com') && attempt < maxAttempts) {
-                        safeLogger.info('Still on consent domain, retrying consent handling.');
-                        return await handleYouTubeConsent(mainPageContext, logger, attempt + 1, maxAttempts);
-                    }
-                    return true; // Assume it was handled if we got this far and didn't throw
-                }
-            } catch (e) {
-                safeLogger.debug(`Consent selector "${selector}" error: ${e.message.split('\n')[0]}`);
-            }
-        }
-        safeLogger.warn('Consent dialog was visible, but no known button was clickable.');
-        if (attempt < maxAttempts) {
-            safeLogger.info(`Retrying consent check after delay (attempt ${attempt + 1}/${maxAttempts}).`);
-            await sleep(3000 + nodeJsRandom(1000));
-            return await handleYouTubeConsent(page.parentFrame() || page, logger, attempt + 1, maxAttempts);
-        }
-        return false; // Failed after all retries
     }
     
-    safeLogger.info('No consent dialog/form element visible on this check.');
-    return false; // No dialog/form to handle
+    // Try to find the dialog/form in the current context (page or frame)
+    const consentDialogElement = pageOrFrame.locator(consentDialogSelector).first();
+    if (!await consentDialogElement.isVisible({ timeout: 5000 }).catch(() => false)) {
+        safeLogger.info('No main consent dialog/form element visible on this check.');
+        return false; // No dialog to handle
+    }
+    safeLogger.info('Consent dialog/form element IS visible.');
+
+    // Prioritize selectors based on whether it's a full consent page or a popup
+    const buttonSelectors = isFullConsentPage 
+        ? [ // Full page consent selectors (often forms)
+            'form[action*="consent.youtube.com/save"] button[jsname="j6LnYe"]', // "Confirm" jsname
+            'form[action*="consent.youtube.com/save"] button:has-text("Confirm")',
+            'form[action*="consent.youtube.com/save"] button[aria-label*="Accept"]', // More generic accept on form
+            'form[action*="consent.youtube.com"] button[type="submit"]:not([aria-label*="Reject"])', // Any submit not explicitly rejecting
+            'button[aria-label*="Accept all"]', // Fallback to standard if form buttons fail
+          ]
+        : [ // Popup consent selectors
+            'button[aria-label*="Accept all"]', 
+            'button[aria-label*="Accept the use of cookies"]',
+            'button[aria-label*="Agree to all"]', 
+            'button[aria-label*="Agree"]',
+            'ytd-button-renderer:has-text("Accept all")', 
+            'tp-yt-paper-button:has-text("ACCEPT ALL")',
+            '#introAgreeButton',
+            'button:has(span:text-is("Accept all"))',
+          ];
+    
+    for (const selector of buttonSelectors) {
+        try {
+            const button = pageOrFrame.locator(selector).first();
+            if (await button.isVisible({ timeout: 3000 })) {
+                safeLogger.info(`Consent button found: "${selector}". Attempting click.`);
+                if (isFullConsentPage || selector.includes('form[action*="consent.youtube.com/save"]')) { // Expect navigation from full page forms
+                    await Promise.all([
+                        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
+                            safeLogger.warn(`Navigation from consent click (selector: ${selector}) did not complete as expected: ${e.message.split('\n')[0]}`);
+                        }),
+                        button.click({ timeout: 5000, force: true })
+                    ]);
+                } else { // For popups, click might not navigate immediately
+                    await button.click({ timeout: 5000, force: true });
+                }
+                await sleep(3000 + nodeJsRandom(1000)); // Generous wait for state change / navigation
+                safeLogger.info('Consent button clicked.');
+
+                // Check if we successfully navigated away or the dialog is gone
+                const mainPageContextAfterClick = page.parentFrame() || page;
+                const newUrlAfterClick = mainPageContextAfterClick.url();
+                if (!newUrlAfterClick.includes('consent.youtube.com')) {
+                    safeLogger.info(`Successfully navigated away from consent. New URL: ${newUrlAfterClick.substring(0,100)}`);
+                    return true;
+                }
+                if (!await mainPageContextAfterClick.locator(consentDialogSelector).first().isVisible({ timeout: 2000 }).catch(() => false)) {
+                    safeLogger.info('Consent dialog dismissed (no longer visible on main page context).');
+                    return true;
+                }
+                safeLogger.warn('Clicked consent, but still on consent page or dialog visible. Might be a multi-step consent.');
+                // If still on consent page after a click, retry handling from current state
+                if (newUrlAfterClick.includes('consent.youtube.com') && attempt < maxAttempts) {
+                    return await handleYouTubeConsent(mainPageContextAfterClick, logger, attempt + 1, maxAttempts);
+                }
+                return true; // Assume handled if we don't throw
+            }
+        } catch (e) {
+            safeLogger.debug(`Consent selector "${selector}" error: ${e.message.split('\n')[0]}`);
+        }
+    }
+
+    safeLogger.warn('Consent dialog/form was visible, but no known button was clickable.');
+    if (attempt < maxAttempts) {
+        safeLogger.info(`Retrying consent check after delay (attempt ${attempt + 1}/${maxAttempts}).`);
+        await sleep(3000 + nodeJsRandom(1000));
+        return await handleYouTubeConsent(page.parentFrame() || page, logger, attempt + 1, maxAttempts); // Retry on main page context
+    }
+    return false; // Failed after all retries
 }
 
 
@@ -339,9 +336,10 @@ async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) {
             safeLogger.warn('[waitForVideoToLoad] Page closed during wait.');
             throw new Error('Page closed while waiting for video load');
         }
-        if (page.url().includes("consent.youtube.com")) { // Check if we got redirected to consent
-            safeLogger.warn('[waitForVideoToLoad] Page redirected to consent screen during video load wait. Aborting load wait, recovery should handle consent.');
-            throw new Error('Redirected to consent screen during waitForVideoToLoad');
+        // Critical: If we are on a consent page here, something went wrong before.
+        if (page.url().includes("consent.youtube.com")) {
+            safeLogger.error('[waitForVideoToLoad] FATAL: Page is on consent.youtube.com. Cannot load video.');
+            throw new Error('Redirected to consent screen during waitForVideoToLoad - indicates consent was not fully handled before video load attempt.');
         }
         const videoState = await page.evaluate(() => {
             const video = document.querySelector('video.html5-main-video');
@@ -676,7 +674,7 @@ class YouTubeViewWorker {
         }
 
         this.browser = await playwright.chromium.launch(launchOptions);
-        this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.8).');
+        this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.9).');
 
         this.context = await this.browser.newContext({
             userAgent: this.fingerprintProfile.userAgent,
@@ -778,14 +776,14 @@ class YouTubeViewWorker {
         await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 });
         this.logger.info('Navigation (domcontentloaded event) complete.');
         
-        await handleYouTubeConsent(this.page, this.logger, 1, 3);
+        await handleYouTubeConsent(this.page, this.logger, 1, 3); // Allow 3 attempts for consent
         if (this.page.url().includes("consent.youtube.com")) {
-            this.logger.error(`Still on consent page after initial consent handling: ${this.page.url().substring(0,100)}. This is likely an issue. Aborting startWorker.`);
+            this.logger.error(`Still on consent page after initial consent handling and attempts: ${this.page.url().substring(0,100)}. Aborting startWorker for this job.`);
             throw new Error("Failed to navigate away from consent page after initial attempt.");
         }
         await sleep(nodeJsRandom(2000, 4000));
 
-        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.8).');
+        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.9).');
 
         this.logger.info('Waiting for video to load data (up to 90s)...');
         try {
@@ -1123,103 +1121,70 @@ class YouTubeViewWorker {
 
     async attemptPlaybackRecovery() {
         this.logger.warn('Attempting playback recovery...');
-        let success = false;
-        const originalJobUrl = this.job.videoUrl; 
+        const originalJobUrl = this.job.videoUrl; // This is the URL we ultimately want to view.
     
-        // Recovery Option 1: Simple page reload of the CURRENT URL
-        // Only try reload if we are NOT on a consent.youtube.com URL, as reloading that is pointless.
-        if (!this.page.url().includes("consent.youtube.com")) {
-            this.logger.info(`Recovery: Attempting page.reload() on current URL: ${this.page.url().substring(0,100)}`);
-            try {
-                await this.page.reload({ waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.6 }); // Shorter timeout
-                await sleep(2500 + nodeJsRandom(1000));
-                await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentRefresh:'}), 1, 2); // Reduced attempts here
-                
-                if (!this.page.url().includes("consent.youtube.com") && this.page.url().includes(this.job.videoId)) {
-                    await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoadRefresh:'}), 45000);
-                    if (this.job.platform === 'youtube') {
-                        await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'RecoveryQualityRefresh:'}));
-                    }
-                    success = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-refresh');
-                    if (success) {
-                        this.logger.info('Playback recovery successful via REFRESH!');
-                        return true;
-                    }
-                } else {
-                    this.logger.warn(`Reload resulted in URL: ${this.page.url().substring(0,100)}. Not the expected video page or still on consent. Proceeding to re-navigation.`);
+        // Attempt 1: Reload current page. This is useful if the current page IS the video page but stuck.
+        this.logger.info(`Recovery 1: Attempting page.reload() on current URL: ${this.page.url().substring(0, 100)}`);
+        try {
+            await this.page.reload({ waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.6 });
+            await sleep(2500 + nodeJsRandom(1000));
+            await handleYouTubeConsent(this.page, this.logger.child({ prefix: 'RecoveryConsentRefresh:' }), 1, 2);
+    
+            // After reload and consent, check if we are on the correct video page and video loads
+            if (this.page.url().includes(this.job.videoId) && !this.page.url().includes("consent.youtube.com")) {
+                this.logger.info('Reload seems to have kept us on/taken us to a video page.');
+                await waitForVideoToLoad(this.page, this.logger.child({ prefix: 'RecoveryLoadRefresh:' }), 45000);
+                if (this.job.platform === 'youtube') {
+                    await setVideoQualityToLowest(this.page, this.logger.child({ prefix: 'RecoveryQualityRefresh:' }));
                 }
-                this.logger.warn('Recovery via page.reload() did not resume playback or landed on wrong/consent page.');
-            } catch (e) {
-                this.logger.error(`Recovery via page.reload() failed: ${e.message}`);
+                if (await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-refresh')) {
+                    this.logger.info('Playback recovery successful via REFRESH!');
+                    return true;
+                }
+            } else {
+                this.logger.warn(`Reload resulted in URL: ${this.page.url().substring(0, 100)}. Not the video page or still on consent. Proceeding to re-navigation.`);
             }
-        } else {
-            this.logger.info('Skipping page.reload() recovery because current URL is a consent page.');
+        } catch (e) {
+            this.logger.error(`Recovery via page.reload() failed: ${e.message}`);
         }
     
-        // Recovery Option 2: Re-navigate to the original job video URL
-        this.logger.info(`Recovery: Attempting to re-navigate to job video URL: ${originalJobUrl}`);
+        // Attempt 2: Navigate directly to the original job video URL.
+        this.logger.info(`Recovery 2: Attempting to re-navigate to job video URL: ${originalJobUrl}`);
         try {
-            // Ensure we are not re-navigating to a consent URL if originalJobUrl somehow became that
-            let targetUrl = originalJobUrl;
-            if (targetUrl.includes("consent.youtube.com")) {
-                this.logger.warn(`Original job URL "${targetUrl}" seems to be a consent URL. Attempting to extract 'continue' param.`);
-                try {
-                    const urlObj = new URL(targetUrl);
-                    const continueParam = urlObj.searchParams.get('continue');
-                    if (continueParam) {
-                        targetUrl = continueParam;
-                        this.logger.info(`Using extracted continue URL for navigation: ${targetUrl.substring(0,100)}`);
-                    } else {
-                        this.logger.error("Could not extract 'continue' URL from consent URL. Recovery might fail.");
-                         // Fallback to a generic YouTube page if all else fails, then rely on search if applicable
-                        if (this.job.watchType === 'search' && this.job.searchKeywords && this.job.searchKeywords.length > 0) {
-                           targetUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(this.job.searchKeywords[0])}`;
-                           this.logger.warn(`Fallback to search page: ${targetUrl}`);
-                        } else {
-                           targetUrl = "https://www.youtube.com"; // Last resort
-                           this.logger.warn("Fallback to YouTube homepage as last resort.");
-                        }
-                    }
-                } catch (e) {
-                    this.logger.error(`Error parsing originalJobUrl "${originalJobUrl}" during recovery: ${e.message}`);
-                    // If parsing fails, it's too risky to navigate blindly, so fail this recovery.
-                    return false;
-                }
-            }
-
-
-            await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.8 });
-            await sleep(2500 + nodeJsRandom(1000));
-            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentReNav:'}), 1, 3); // More attempts for consent here
+            await this.page.goto(originalJobUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.8 });
+            await sleep(3000 + nodeJsRandom(1000)); // More time for page to potentially redirect or settle
+            await handleYouTubeConsent(this.page, this.logger.child({ prefix: 'RecoveryConsentReNav:' }), 1, 3); // More robust consent check
             
             if (this.page.url().includes("consent.youtube.com")) {
-                this.logger.error(`Still on consent page after re-navigating and handling consent. URL: ${this.page.url().substring(0,100)}. Recovery failed.`);
-                return false;
+                this.logger.error(`Still on consent page after re-navigating to video URL ("${originalJobUrl}") and handling consent. URL: ${this.page.url().substring(0,100)}. Recovery failed.`);
+                return false; 
             }
-            // Ensure we are on a page that contains the video ID if it's a YouTube video
-            if (this.job.platform === 'youtube' && !this.page.url().includes(this.job.videoId)) {
+             if (this.job.platform === 'youtube' && !this.page.url().includes(this.job.videoId) && !this.page.url().includes('google.com/sorry')) { // also check for captcha
                  this.logger.error(`After re-navigation and consent, not on the expected video page. URL: ${this.page.url().substring(0,100)}. Video ID: ${this.job.videoId}. Recovery failed.`);
                  return false;
             }
-
-
-            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoadReNav:'}), 60000);
-            if (this.job.platform === 'youtube') {
-                await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'RecoveryQualityReNav:'}));
+            if (this.page.url().includes('google.com/sorry')) {
+                this.logger.error('Encountered Google captcha/sorry page during recovery. Recovery failed.');
+                return false;
             }
-            success = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-re-navigate');
-            
-            if (success) {
-                this.logger.info('Playback recovery successful via RE-NAVIGATION!');
+
+
+            await waitForVideoToLoad(this.page, this.logger.child({ prefix: 'RecoveryLoadReNav:' }), 60000);
+            if (this.job.platform === 'youtube') {
+                await setVideoQualityToLowest(this.page, this.logger.child({ prefix: 'RecoveryQualityReNav:' }));
+            }
+            if (await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-re-navigate')) {
+                this.logger.info('Playback recovery successful via RE-NAVIGATION to original URL!');
+                return true;
             } else {
-                this.logger.warn('Recovery via re-navigation did not resume playback.');
+                this.logger.warn('Recovery via re-navigation to original URL did not resume playback.');
             }
         } catch (e) {
-            this.logger.error(`Recovery via re-navigation failed: ${e.message}`);
+            this.logger.error(`Recovery via re-navigation to original URL failed: ${e.message}`);
         }
         
-        if(!success) this.logger.warn('All playback recovery methods attempted did not succeed.');
-        return success;
+        this.logger.warn('All playback recovery methods attempted did not succeed.');
+        return false;
     }
 
     async watchVideo() {
@@ -1287,81 +1252,89 @@ class YouTubeViewWorker {
             let isStalledThisCheck = false;
 
             try {
-                videoState = await this.page.evaluate(() => { 
-                    const v = document.querySelector('video.html5-main-video');
-                    if (!v) return { currentTime: 0, paused: true, ended: true, readyState: 0, networkState: 3, error: null, src: null, videoWidth:0, videoHeight:0 };
-                    return {
-                        ct: v.currentTime, p: v.paused, e: v.ended,
-                        rs: v.readyState, ns: v.networkState,
-                        error: v.error ? { code: v.error.code, message: v.error.message } : null,
-                        src: v.currentSrc || v.src, videoWidth: v.videoWidth, videoHeight: v.videoHeight
-                    };
-                });
+                // Crucial: Check if we are on a consent page before evaluating video state
+                if (this.page.url().includes("consent.youtube.com")) {
+                    this.logger.warn(`WatchVideo loop detected page is on consent.youtube.com. Triggering stall for recovery.`);
+                    isStalledThisCheck = true;
+                    consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY; // Force recovery
+                } else {
+                    videoState = await this.page.evaluate(() => { 
+                        const v = document.querySelector('video.html5-main-video');
+                        if (!v) return { currentTime: 0, paused: true, ended: true, readyState: 0, networkState: 3, error: null, src: null, videoWidth:0, videoHeight:0 };
+                        return {
+                            ct: v.currentTime, p: v.paused, e: v.ended,
+                            rs: v.readyState, ns: v.networkState,
+                            error: v.error ? { code: v.error.code, message: v.error.message } : null,
+                            src: v.currentSrc || v.src, videoWidth: v.videoWidth, videoHeight: v.videoHeight
+                        };
+                    });
 
-                if (!videoState) {
-                    (this.logger.warn || this.logger.warning).call(this.logger, 'Video element not found in evaluate during watch loop. This indicates a serious problem or page redirect.');
-                    isStalledThisCheck = true; 
-                    consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY;
-                 } else {
-                    currentActualVideoTime = videoState.ct || 0;
-                    if (currentActualVideoTime > this.maxTimeReachedThisView) {
-                        this.maxTimeReachedThisView = currentActualVideoTime;
-                    }
-                    
-                    const videoPlaying = !videoState.p && videoState.rs >= 3 && !videoState.e;
-                    if (videoPlaying) {
-                        if (currentActualVideoTime > this.lastLoggedVideoTime + 4.5 || this.lastLoggedVideoTime < 0) { 
-                            this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns} Dim:${videoState.videoWidth}x${videoState.videoHeight}`);
-                            this.lastLoggedVideoTime = currentActualVideoTime;
+                    if (!videoState) {
+                        (this.logger.warn || this.logger.warning).call(this.logger, 'Video element not found in evaluate during watch loop. This indicates a serious problem or page redirect.');
+                        isStalledThisCheck = true; 
+                        consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY;
+                     } else {
+                        currentActualVideoTime = videoState.ct || 0;
+                        if (currentActualVideoTime > this.maxTimeReachedThisView) {
+                            this.maxTimeReachedThisView = currentActualVideoTime;
+                        }
+                        
+                        const videoPlaying = !videoState.p && videoState.rs >= 3 && !videoState.e;
+                        if (videoPlaying) {
+                            if (currentActualVideoTime > this.lastLoggedVideoTime + 4.5 || this.lastLoggedVideoTime < 0) { 
+                                this.logger.info(`Video playing at ${currentActualVideoTime.toFixed(1)}s (max: ${this.maxTimeReachedThisView.toFixed(1)}s) RS:${videoState.rs} NS:${videoState.ns} Dim:${videoState.videoWidth}x${videoState.videoHeight}`);
+                                this.lastLoggedVideoTime = currentActualVideoTime;
+                            } else {
+                                this.logger.debug(`Video playing at ${currentActualVideoTime.toFixed(1)}s`);
+                            }
+                        } else if (videoState.p && !videoState.e) {
+                            this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
+                            this.lastLoggedVideoTime = -10;
                         } else {
-                            this.logger.debug(`Video playing at ${currentActualVideoTime.toFixed(1)}s`);
+                             this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}, src=${!!videoState.src}`);
                         }
-                    } else if (videoState.p && !videoState.e) {
-                        this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
-                        this.lastLoggedVideoTime = -10;
-                    } else {
-                         this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}, src=${!!videoState.src}`);
-                    }
 
-                    if (videoState.error && videoState.error.code) {
-                        this.logger.error(`Player Error Detected in watch loop: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Triggering recovery.`);
-                        isStalledThisCheck = true;
-                        if (videoState.error.code === 2 && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                            this.logger.warn("Network error (code 2) in player, will attempt recovery via stall logic.");
-                        } else if (videoState.error.code === 3 || videoState.error.code === 4) {
-                            this.logger.error(`Fatal player error (Decode/Src). Code: ${videoState.error.code}`);
-                            throw new Error(`Fatal Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
-                        } else { 
-                            this.logger.error(`Unhandled or non-recoverable player error. Code: ${videoState.error.code}`);
-                            if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB -1) { 
-                                 throw new Error(`Unhandled Video Player Error Code ${videoState.error.code}: ${videoState.error.message} (recovery exhausted)`);
+                        if (videoState.error && videoState.error.code) {
+                            this.logger.error(`Player Error Detected in watch loop: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Triggering recovery.`);
+                            isStalledThisCheck = true;
+                            if (videoState.error.code === 2 && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                                this.logger.warn("Network error (code 2) in player, will attempt recovery via stall logic.");
+                            } else if (videoState.error.code === 3 || videoState.error.code === 4) {
+                                this.logger.error(`Fatal player error (Decode/Src). Code: ${videoState.error.code}`);
+                                throw new Error(`Fatal Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
+                            } else { 
+                                this.logger.error(`Unhandled or non-recoverable player error. Code: ${videoState.error.code}`);
+                                if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB -1) { 
+                                     throw new Error(`Unhandled Video Player Error Code ${videoState.error.code}: ${videoState.error.message} (recovery exhausted)`);
+                                }
                             }
                         }
-                    }
-                    
-                    if (videoState.rs === 0 && (Date.now() - overallWatchStartTime > 15000)) {
-                        if (currentActualVideoTime < 1 && (Date.now() - lastProgressTimestamp) > 5000) {
-                             this.logger.warn(`CRITICAL STALL DETECTED: ReadyState 0. CT: ${currentActualVideoTime.toFixed(1)}. Forcing recovery check.`);
-                             isStalledThisCheck = true;
-                             consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY;
+                        
+                        if (videoState.rs === 0 && (Date.now() - overallWatchStartTime > 15000)) {
+                            if (currentActualVideoTime < 1 && (Date.now() - lastProgressTimestamp) > 5000) {
+                                 this.logger.warn(`CRITICAL STALL DETECTED: ReadyState 0. CT: ${currentActualVideoTime.toFixed(1)}. Forcing recovery check.`);
+                                 isStalledThisCheck = true;
+                                 consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY;
+                            }
                         }
-                    }
 
-                    if (!isStalledThisCheck) {
-                        if (!videoState.p && videoState.rs >= 2 && !videoState.e) { 
-                            if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) {
-                                this.logger.warn(`Normal stall: No progress. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}.`);
-                                isStalledThisCheck = true;
-                            } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) { 
-                                lastKnownGoodVideoTime = currentActualVideoTime;
+                        if (!isStalledThisCheck) {
+                            if (!videoState.p && videoState.rs >= 2 && !videoState.e) { 
+                                if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) {
+                                    this.logger.warn(`Normal stall: No progress. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}.`);
+                                    isStalledThisCheck = true;
+                                } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) { 
+                                    lastKnownGoodVideoTime = currentActualVideoTime;
+                                    lastProgressTimestamp = Date.now();
+                                    consecutiveStallChecks = 0; 
+                                }
+                            } else if (videoState.p && !videoState.e) { 
                                 lastProgressTimestamp = Date.now();
-                                consecutiveStallChecks = 0; 
                             }
-                        } else if (videoState.p && !videoState.e) { 
-                            lastProgressTimestamp = Date.now();
                         }
-                    }
-                 }
+                     }
+                }
+
 
                 if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds && !isStalledThisCheck) {
                     const playAttemptSuccess = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'paused-resume');
@@ -1446,7 +1419,7 @@ class YouTubeViewWorker {
                     (this.logger.warn || this.logger.warning).call(this.logger, `Watch loop error (Target closed/Protocol/Nav): ${e.message}`); throw e;
                 }
                  (this.logger.warn || this.logger.warning).call(this.logger, `Video state eval/check error: ${e.message.split('\n')[0]}`);
-                 if (e.message.includes('all recovery attempts exhausted') || e.message.includes('Recovery by navigation failed definitively') || e.message.includes('failed to restart playback') || e.message.includes('Video Player Error Code') || e.message.includes('Fatal Video Player Error Code')) throw e;
+                 if (e.message.includes('all recovery attempts exhausted') || e.message.includes('Recovery by navigation failed definitively') || e.message.includes('failed to restart playback') || e.message.includes('Video Player Error Code') || e.message.includes('Fatal Video Player Error Code') || e.message.includes('Redirected to consent screen')) throw e;
                  await sleep(checkIntervalMs); continue;
             }
             
@@ -1541,7 +1514,7 @@ async function actorMainLogic() {
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.8).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.9 - Consent Focus).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1710,7 +1683,7 @@ async function actorMainLogic() {
                     ignoreHTTPSErrors: true,
                 });
 
-                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.8).');
+                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.9).');
 
                 searchPage = await searchContext.newPage();
 
@@ -1720,7 +1693,7 @@ async function actorMainLogic() {
                 await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 }); 
                 await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}), 1, 2);
                 
-                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.9.8).');
+                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.9.9).');
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
