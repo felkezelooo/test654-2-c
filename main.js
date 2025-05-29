@@ -1,8 +1,11 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+// IMPORTANT: Use Playwright directly, not playwright-extra if we are disabling StealthPlugin
+// and managing all fingerprinting ourselves.
+// If playwright-extra is still used, it's fine, but we are not relying on its extra features here.
+const playwright = require('playwright'); // Or keep chromium from 'playwright-extra' if it causes no issues
+// const { chromium } = require('playwright-extra'); // Original
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
@@ -35,63 +38,83 @@ Date.prototype.isDstActive = function(tz = "America/New_York") {
     return false;
 };
 
+// Function to get a random item from an array
+function getRandomArrayItem(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+
 const FINGERPRINT_PROFILES = {
-    'US_CHROME_WIN_NVIDIA': {
-        profileKeyName: 'US_CHROME_WIN_NVIDIA',
+    'US_CHROME_WIN_NVIDIA_V2': {
+        profileKeyName: 'US_CHROME_WIN_NVIDIA_V2',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        acceptLanguage: 'en-US,en;q=0.9',
+        platform: 'Win32',
+        deviceMemory: 8,
+        hardwareConcurrency: getRandomArrayItem([8, 12, 16]), // More common values
+        vendor: 'Google Inc.',
+        plugins: [
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+        ],
+        mimeTypes: [
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },
+            { type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }
+        ],
         locale: 'en-US',
         timezoneId: 'America/New_York',
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 240 : 300; },
-        platform: 'Win32',
-        webGLVendor: 'Google Inc. (NVIDIA)',
-        webGLRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)',
         screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-        deviceMemory: 8,
-        hardwareConcurrency: Math.max(4, (Math.floor(Math.random() * 4) + 2) * 2),
-        vendor: 'Google Inc.'
+        webGLVendor: 'Google Inc. (NVIDIA)',
+        webGLRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)',
     },
-    'GB_CHROME_WIN_AMD': {
-        profileKeyName: 'GB_CHROME_WIN_AMD',
+    'GB_CHROME_WIN_AMD_V2': {
+        profileKeyName: 'GB_CHROME_WIN_AMD_V2',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        acceptLanguage: 'en-GB,en;q=0.9',
+        platform: 'Win32',
+        deviceMemory: 16,
+        hardwareConcurrency: getRandomArrayItem([6, 8, 12]),
+        vendor: 'Google Inc.',
+        plugins: [ /* Can be same or slightly different */
+            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+        ],
+        mimeTypes: [ /* Can be same or slightly different */
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+            { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+        ],
         locale: 'en-GB',
         timezoneId: 'Europe/London',
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? -60 : 0; },
-        platform: 'Win32',
+        screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
         webGLVendor: 'Google Inc. (AMD)',
-        webGLRenderer: 'ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)',
-        screen: { width: 2560, height: 1440, availWidth: 2560, availHeight: 1400, colorDepth: 24, pixelDepth: 24 },
-        deviceMemory: 16,
-        hardwareConcurrency: Math.max(6, (Math.floor(Math.random() * 5) + 3) * 2),
-        vendor: 'Google Inc.'
+        webGLRenderer: 'ANGLE (AMD, AMD Radeon RX 6800 XT Direct3D11 vs_5_0 ps_5_0, D3D11)',
     },
-    'US_MAC_CHROME_M_SERIES': {
-        profileKeyName: 'US_MAC_CHROME_M_SERIES',
+    'US_MAC_CHROME_M_V2': {
+        profileKeyName: 'US_MAC_CHROME_M_V2',
         userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        acceptLanguage: 'en-US,en;q=0.9',
+        platform: 'MacIntel',
+        deviceMemory: 16,
+        hardwareConcurrency: getRandomArrayItem([8, 10, 12]), // M-series have various core counts
+        vendor: 'Apple Computer, Inc.',
+         plugins: [ // Macs often have fewer default-like plugins visible this way
+            { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        ],
+        mimeTypes: [
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+        ],
         locale: 'en-US',
         timezoneId: 'America/Los_Angeles',
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 420 : 480; },
-        platform: 'MacIntel',
-        webGLVendor: 'Apple',
-        webGLRenderer: 'Apple M3 Pro',
-        screen: { width: 1728, height: 1117, availWidth: 1728, availHeight: 1079, colorDepth: 30, pixelDepth: 30 },
-        deviceMemory: 16,
-        hardwareConcurrency: 10,
-        vendor: 'Apple Computer, Inc.'
+        screen: { width: 2560, height: 1600, availWidth: 2560, availHeight: 1570, colorDepth: 24, pixelDepth: 24 }, // Common MacBook Retina
+        webGLVendor: 'Apple', // Or 'Google Inc. (Apple)'
+        webGLRenderer: 'Apple M2 Pro', // Example
     },
-    'HU_CHROME_WIN_INTEL': {
-        profileKeyName: 'HU_CHROME_WIN_INTEL',
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        locale: 'hu-HU',
-        timezoneId: 'Europe/Budapest',
-        get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? -120 : -60; },
-        platform: 'Win32',
-        webGLVendor: 'Google Inc. (Intel)',
-        webGLRenderer: 'ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)',
-        screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-        deviceMemory: 8,
-        hardwareConcurrency: Math.max(4, (Math.floor(Math.random() * 3) + 2) * 2),
-        vendor: 'Google Inc.'
-    }
 };
 
 function getRandomProfileKeyName() {
@@ -103,6 +126,7 @@ function getProfileByCountry(countryCode) {
     const countryUpper = countryCode ? countryCode.toUpperCase() : '';
     const deepCopy = (profile) => JSON.parse(JSON.stringify(profile));
     const matchingProfileKeys = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith(countryUpper + '_'));
+
     if (matchingProfileKeys.length > 0) {
         const selectedKey = matchingProfileKeys[Math.floor(Math.random() * matchingProfileKeys.length)];
         return deepCopy(FINGERPRINT_PROFILES[selectedKey]);
@@ -115,14 +139,17 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
 
-try {
-    console.log('MAIN.JS: Attempting to apply StealthPlugin...');
-    chromium.use(StealthPlugin());
-    console.log('MAIN.JS: StealthPlugin applied successfully (v1.9.2).');
-} catch (e) {
-    console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
-    throw e;
-}
+// Gemini: StealthPlugin is DISABLED for this v2.0 test
+// try {
+//     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
+//     chromium.use(StealthPlugin());
+//     console.log('MAIN.JS: StealthPlugin applied successfully (v1.9.2).');
+// } catch (e) {
+//     console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
+//     throw e;
+// }
+console.log('MAIN.JS: StealthPlugin application SKIPPED for v2.0 Unified Fingerprinting test.');
+
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function getSafeLogger(loggerInstance) { /* ... (unchanged) ... */
@@ -223,28 +250,236 @@ async function handleYouTubeConsent(page, logger) { /* ... (unchanged) ... */
     return false;
 }
 
-// Using STABLE_ANTI_DETECTION_ARGS (from Gemini's previous suggestion for v1.9)
-const ANTI_DETECTION_ARGS = [
-    '--disable-blink-features=AutomationControlled',
-    '--no-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--mute-audio', 
-    '--ignore-certificate-errors',
-    '--no-first-run',
-    '--no-service-autorun',
-    '--password-store=basic',
-    '--use-mock-keychain',
-];
+// ANTI_DETECTION_ARGS will be generated by generateBrowserLaunchAndContextOptions
 
-// applyAntiDetectionScripts is COMPLETELY COMMENTED OUT for "Pure Stealth" test
-/*
-async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
-    // ... (code for STEALTH_COMPLEMENTARY + WebGL was here) ...
+// applyAntiDetectionScripts is replaced by the initScript within generateBrowserLaunchAndContextOptions
+
+// Gemini v2.0: New Unified Function
+function generateBrowserLaunchAndContextOptions(fingerprintProfile, effectiveInput, baseLogger) {
+    const logger = getSafeLogger(baseLogger);
+    logger.info(`Generating launch/context options for profile: ${fingerprintProfile.profileKeyName}`);
+
+    // Ensure profile getters are resolved before stringifying for the init script
+    const profileForScript = {
+        ...fingerprintProfile,
+        timezoneOffsetMinutes: fingerprintProfile.timezoneOffsetMinutes, // Explicitly call getter
+        hardwareConcurrency: fingerprintProfile.hardwareConcurrency, // Resolve random if it's a getter
+        // Note: deviceMemory is already a fixed number in the example profiles
+    };
+
+
+    const launchArgs = [
+        '--disable-blink-features=AutomationControlled,LegacyForceDark',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        `--window-size=${profileForScript.screen.width},${profileForScript.screen.height}`,
+        '--mute-audio',
+        '--ignore-certificate-errors',
+        '--no-first-run',
+        '--no-service-autorun',
+        '--password-store=basic',
+        '--use-mock-keychain',
+        '--force-webrtc-ip-handling-policy=default_public_interface_only',
+        `--lang=${profileForScript.locale}`,
+        '--disable-features=InterestGroupStorage,PrivacySandboxAdsAPIs,WebRTC-HideLocalIpsWithMdns', // Added another WebRTC related one
+    ];
+
+    const contextOptions = {
+        userAgent: profileForScript.userAgent,
+        locale: profileForScript.locale,
+        timezoneId: profileForScript.timezoneId,
+        screen: { 
+            width: profileForScript.screen.width,
+            height: profileForScript.screen.height
+        },
+        viewport: { 
+            width: profileForScript.screen.width,
+            height: profileForScript.screen.height
+        },
+        deviceScaleFactor: (profileForScript.screen.width > 2000 || profileForScript.screen.height > 1200) ? 1.5 : 1,
+        isMobile: false,
+        hasTouch: false,
+        acceptDownloads: false, // Typically false for viewing bots
+        bypassCSP: true,
+        ignoreHTTPSErrors: true,
+        javaScriptEnabled: true,
+        permissions: ['geolocation', 'notifications'], // Keep minimal, initScript will grant more if needed
+        geolocation: effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
+                     effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
+                     effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
+        extraHTTPHeaders: {
+            'Accept-Language': profileForScript.acceptLanguage || `${profileForScript.locale},${profileForScript.locale.split('-')[0]};q=0.9,en;q=0.8`
+        }
+    };
+
+    const scriptToInject = `(${((fpArgs) => {
+        const {
+            dynamicLocale, dynamicTimezoneOffset, dynamicPlatform, dynamicVendor,
+            dynamicWebGLVendor, dynamicWebGLRenderer, dynamicDeviceMemory, dynamicHardwareConcurrency,
+            dynamicScreen, dynamicPlugins, dynamicMimeTypes, uaString
+        } = fpArgs;
+
+        const _uuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+            const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+        const _generateRandomString = (length) => {
+            let result = ''; const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            for (let i = 0; i < length; i++) result += characters.charAt(Math.floor(Math.random() * characters.length));
+            return result;
+        };
+
+
+        // --- Core WebDriver Evasion ---
+        if (navigator.webdriver === true) try { Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e){}
+        if (typeof navigator.__proto__ !== 'undefined') { try { delete navigator.__proto__.webdriver; } catch(e){} }
+
+        // --- Navigator Properties ---
+        const langBase = dynamicLocale.split('-')[0];
+        const languagesArray = dynamicLocale.includes('-') ? [dynamicLocale, langBase, 'en'] : [dynamicLocale, 'en'];
+        try { Object.defineProperty(navigator, 'languages', { get: () => languagesArray.filter((v,i,a)=>a.indexOf(v)===i), configurable: true }); } catch(e){}
+        try { Object.defineProperty(navigator, 'language', { get: () => dynamicLocale, configurable: true }); } catch(e){}
+        try { Object.defineProperty(navigator, 'platform', { get: () => dynamicPlatform, configurable: true }); } catch(e){}
+        if (typeof dynamicVendor === 'string') try { Object.defineProperty(navigator, 'vendor', { get: () => dynamicVendor, configurable: true }); } catch(e){}
+        if (typeof dynamicDeviceMemory === 'number') try { Object.defineProperty(navigator, 'deviceMemory', { get: () => dynamicDeviceMemory, configurable: true }); } catch(e){}
+        if (typeof dynamicHardwareConcurrency === 'number') try { Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => dynamicHardwareConcurrency, configurable: true }); } catch(e){}
+
+        // --- Timezone ---
+        try { Date.prototype.getTimezoneOffset = function() { return dynamicTimezoneOffset; }; } catch(e){}
+
+        // --- Screen ---
+        if (window.screen && dynamicScreen) {
+            ['width', 'height', 'availWidth', 'availHeight', 'colorDepth', 'pixelDepth'].forEach(prop => {
+                try { Object.defineProperty(window.screen, prop, { get: () => dynamicScreen[prop], configurable: true }); } catch(e){}
+            });
+        }
+
+        // --- WebGL ---
+        try {
+            const getParameterProxy = function(parameter) {
+                if (this.canvas && this.canvas.id === 'webgl-fingerprint-canvas-alt') return WebGLRenderingContext.prototype.getParameter.apply(this, arguments); // Example for specific canvas
+                if (parameter === 37445 /* UNMASKED_VENDOR_WEBGL */) return dynamicWebGLVendor;
+                if (parameter === 37446 /* UNMASKED_RENDERER_WEBGL */) return dynamicWebGLRenderer;
+                // if (fpArgs.webGLVersion && parameter === this.VERSION) return fpArgs.webGLVersion;
+                // if (fpArgs.shadingLanguageVersion && parameter === this.SHADING_LANGUAGE_VERSION) return fpArgs.shadingLanguageVersion;
+                return WebGLRenderingContext.prototype.getParameter.apply(this, arguments);
+            };
+            WebGLRenderingContext.prototype.getParameter = getParameterProxy;
+            if (window.WebGL2RenderingContext) { WebGL2RenderingContext.prototype.getParameter = getParameterProxy; }
+        } catch (e) { console.debug('[FP] WebGL Spoof Error:', e.message); }
+
+        // --- Canvas (Subtle Noise) ---
+        try {
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {
+                const { width, height } = this;
+                if (width > 0 && height > 0 && this.id !== 'canvas-noise-skip') { // Allow skipping for specific canvases
+                    const ctx = this.getContext('2d');
+                    if (ctx) {
+                        const randomVal = Math.floor(Math.random() * 3) -1; // -1, 0, or 1
+                        if (randomVal !== 0) {
+                            try {
+                                const imageData = ctx.getImageData(0,0,width,height);
+                                for (let i = 0; i < imageData.data.length; i += 4) {
+                                    imageData.data[i+0] = Math.max(0, Math.min(255, imageData.data[i+0] + randomVal));
+                                    imageData.data[i+1] = Math.max(0, Math.min(255, imageData.data[i+1] + randomVal));
+                                    imageData.data[i+2] = Math.max(0, Math.min(255, imageData.data[i+2] + randomVal));
+                                }
+                                ctx.putImageData(imageData,0,0);
+                            } catch(e) { /* ignore read-only canvases or other errors */ }
+                        }
+                    }
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+        } catch (e) { console.debug('[FP] Canvas Spoof Error:', e.message); }
+
+        // --- Plugins and MimeTypes ---
+        if (dynamicPlugins && dynamicMimeTypes) {
+             const makePlugin = (p) => {
+                const plugin = { name: p.name, filename: p.filename, description: p.description, length: 0 };
+                plugin.item = () => undefined;
+                plugin.namedItem = () => undefined;
+                return Object.freeze(plugin); // Freeze individual plugins
+             };
+             const pluginArray = Object.freeze(dynamicPlugins.map(p => makePlugin(p)));
+             const mimeTypeArray = Object.freeze(dynamicMimeTypes.map(m => Object.freeze({ type: m.type, suffixes: m.suffixes, description: m.description, enabledPlugin: pluginArray.find(p => p.description === m.description || p.name.includes(m.type.split('/')[1])) || pluginArray[0] || null })));
+
+             try { Object.defineProperty(navigator, 'plugins', { get: () => pluginArray, configurable: true }); } catch(e) {}
+             try { Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeTypeArray, configurable: true }); } catch(e) {}
+        }
+
+        // --- Permissions ---
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            const originalQuery = navigator.permissions.query;
+            navigator.permissions.query = function(permissionDesc) {
+                if (['notifications', 'geolocation', 'camera', 'microphone', 'autoplay'].includes(permissionDesc.name)) {
+                    return Promise.resolve({ state: 'granted', onchange: null });
+                }
+                return originalQuery.apply(this, arguments);
+            };
+        }
+
+        // --- Remove common automation flags ---
+        const objectsToClean = [window, document, navigator];
+        const propsToDelete = ['__selenium_unwrapped', '__webdriver_evaluate', '__driver_evaluate',
+                               '__webdriver_script_function', '__webdriver_script_func', '__webdriver_script_fn',
+                               '_phantom', '__nightmare', '_selenium', 'callPhantom', 'callSelenium', '_Selenium_IDE_Recorder',
+                               '$cdc_asdjflasutopfhvcZLmcfl_']; // Common CDC flag
+        objectsToClean.forEach(obj => {
+            propsToDelete.forEach(prop => {
+                if (obj && typeof obj === 'object' && prop in obj) { try { delete obj[prop]; } catch(e){} }
+            });
+        });
+        if (window.__playwright_script_needle__) try { delete window.__playwright_script_needle__; } catch(e){}
+
+
+        // --- RTC (Minimal STUN server, can be expanded) ---
+        if (window.RTCPeerConnection) {
+            const originalRTCPeerConnection = RTCPeerConnection;
+            window.RTCPeerConnection = function(config) {
+                if (config && config.iceServers) {
+                    config.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+                }
+                return new originalRTCPeerConnection(config);
+            };
+            try { window.RTCPeerConnection.prototype = originalRTCPeerConnection.prototype; } catch(e){}
+        }
+
+        // --- User Agent (ensure consistency) ---
+        if (navigator.userAgent !== uaString) {
+            try { Object.defineProperty(navigator, 'userAgent', { get: () => uaString, configurable: true }); } catch(e){}
+        }
+        
+        // --- Media Devices (Claude's simplified version) ---
+        if (navigator.mediaDevices && typeof navigator.mediaDevices.enumerateDevices === 'function') {
+            navigator.mediaDevices.enumerateDevices = () => Promise.resolve([
+                { deviceId: 'default', kind: 'audiooutput', label: '', groupId: 'defaultgroup_' + _generateRandomString(8) },
+                { deviceId: _uuidv4(), kind: 'videoinput', label: 'Integrated Camera', groupId: 'videogroup_' + _generateRandomString(8) },
+                { deviceId: _uuidv4(), kind: 'audioinput', label: 'Internal Microphone', groupId: 'audiogroup_' + _generateRandomString(8) }
+            ]);
+        }
+
+        // --- Autoplay Policy & User Activation (Claude's suggestions) ---
+        try { Object.defineProperty(navigator, 'getAutoplayPolicy', { value: (type) => 'allowed', configurable: true }); } catch(e){}
+        try { Object.defineProperty(navigator, 'userActivation', { get: () => ({ hasBeenActive: true, isActive: true }), configurable: true }); } catch(e){}
+
+
+        // --- Protect console.debug ---
+         try {
+             const d = console.debug;
+             Object.defineProperty(console, 'debug', { value: d, writable: false, configurable: false });
+         } catch(e){}
+
+    }).toString()})(${JSON.stringify(profileForScript)});`; // Pass resolved profile data
+
+    logger.info(`Generated comprehensive initScript, length: ${scriptToInject.length}`);
+    return { launchArgs, contextOptions, initScript };
 }
-*/
 
-async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.8) ... */
+
+async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (unchanged) ... */
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`[waitForVideoToLoad] Starting wait for up to ${maxWaitMs / 1000}s.`);
     const startTime = Date.now();
@@ -365,7 +600,7 @@ class YouTubeViewWorker {
             this.logger.warn = this.logger.warning;
         }
 
-        this.fingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
+        this.fingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry); // This will now use the more detailed profiles
         this.logger.info(`Selected Fingerprint Profile: Key Hint=${this.fingerprintProfile.profileKeyName || 'N/A'}, UA=${this.fingerprintProfile.userAgent.substring(0,70)}..., Locale=${this.fingerprintProfile.locale}, TZID=${this.fingerprintProfile.timezoneId}, Vendor=${this.fingerprintProfile.vendor}`);
         
         this.killed = false;
@@ -395,72 +630,58 @@ class YouTubeViewWorker {
     async startWorker() {
         this.logger.info(`Launching browser... Proxy: ${this.proxyUrlString ? 'Yes' : 'No'}, Headless: ${this.effectiveInput.headless}`);
         
-        const launchOptions = {
+        const { launchArgs, contextOptions, initScript } = generateBrowserLaunchAndContextOptions(
+            this.fingerprintProfile,
+            this.effectiveInput, // Pass effectiveInput for geolocation decision
+            this.logger
+        );
+
+        const finalLaunchOptions = {
             headless: this.effectiveInput.headless,
-            args: [
-                ...ANTI_DETECTION_ARGS, // Using STABLE_ANTI_DETECTION_ARGS
-                `--window-size=${this.fingerprintProfile.screen.width},${this.fingerprintProfile.screen.height}`
-            ],
+            args: launchArgs,
         };
+
         if (this.proxyUrlString) {
             try {
                 const parsedProxy = new URL(this.proxyUrlString);
-                launchOptions.proxy = {
+                finalLaunchOptions.proxy = { // Playwright's direct way of setting proxy for the browser
                     server: `${parsedProxy.protocol}//${parsedProxy.hostname}:${parsedProxy.port}`,
                     username: parsedProxy.username ? decodeURIComponent(parsedProxy.username) : undefined,
                     password: parsedProxy.password ? decodeURIComponent(parsedProxy.password) : undefined,
                 };
-                this.logger.info(`Parsed proxy for Playwright: server=${launchOptions.proxy.server}, user=${launchOptions.proxy.username ? 'Present' : 'N/A'}`);
+                this.logger.info(`Proxy configured for launch: ${finalLaunchOptions.proxy.server}`);
             } catch (e) {
-                this.logger.error(`Failed to parse proxy URL: ${this.proxyUrlString}. Error: ${e.message}`);
-                throw new Error(`Invalid proxy URL format: ${this.proxyUrlString}`);
+                this.logger.error(`Failed to parse proxy URL for launch options: ${this.proxyUrlString}. Error: ${e.message}`);
+                throw new Error(`Invalid proxy URL format for launch: ${this.proxyUrlString}`);
             }
         }
 
-        this.browser = await chromium.launch(launchOptions);
-        this.logger.info('Browser launched (StealthPlugin is RE-ENABLED for this test v1.9.2).');
+        // Using playwright.chromium.launch directly (ensure 'playwright' is required)
+        this.browser = await playwright.chromium.launch(finalLaunchOptions);
+        this.logger.info('Browser launched directly with Playwright (StealthPlugin NOT used for v2.0).');
 
-        this.context = await this.browser.newContext({ // Using Gemini's "Focus on Core Settings for Stealth" context options
-            userAgent: this.fingerprintProfile.userAgent,
-            locale: this.fingerprintProfile.locale,
-            timezoneId: this.fingerprintProfile.timezoneId,
-            screen: { 
-                width: this.fingerprintProfile.screen.width,
-                height: this.fingerprintProfile.screen.height
-            },
-            viewport: {
-                width: this.fingerprintProfile.screen.width,
-                height: this.fingerprintProfile.screen.height
-            },
-            deviceScaleFactor: (this.fingerprintProfile.screen.width > 1920 || this.fingerprintProfile.screen.height > 1080) ? 1.5 : 1,
-            isMobile: false,
-            hasTouch: false,
-            bypassCSP: true,
-            ignoreHTTPSErrors: true,
-            javaScriptEnabled: true,
-            permissions: ['geolocation', 'notifications'],
-            geolocation: this.effectiveInput.proxyCountry === 'US' ? { latitude: 34.0522, longitude: -118.2437 } :
-                         this.effectiveInput.proxyCountry === 'GB' ? { latitude: 51.5074, longitude: 0.1278 } :
-                         this.effectiveInput.proxyCountry === 'HU' ? { latitude: 47.4979, longitude: 19.0402 } : undefined,
-        });
-        this.logger.info(`Browser context created (v1.9.2 - Pure Stealth Focus). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
+        this.context = await this.browser.newContext(contextOptions);
+        this.logger.info(`Browser context created. Profile hints: locale=${contextOptions.locale}, timezoneId=${contextOptions.timezoneId}`);
 
-        // applyAntiDetectionScripts call is COMPLETELY COMMENTED OUT for "Pure Stealth" test
-        // if (this.effectiveInput.customAntiDetection) {
-        //    await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile);
-        // }
-        this.logger.info('Custom anti-detection scripts SKIPPED entirely for v1.9.2 test.');
+        if (initScript) {
+            await this.context.addInitScript(initScript);
+            this.logger.info('Comprehensive fingerprint initScript added to context.');
+        } else {
+            this.logger.warn('No initScript was generated or applied.');
+        }
 
 
         if (this.job.referer) {
             this.logger.info(`Setting referer: ${this.job.referer}`);
-            await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer });
+            // Note: extraHTTPHeaders is a context option, not settable after creation like this
+            // It's now part of contextOptions in generateBrowserLaunchAndContextOptions
+            // await this.context.setExtraHTTPHeaders({ 'Referer': this.job.referer }); // This line should be removed
         }
         this.page = await this.context.newPage();
         this.logger.info('New page created.');
         
         this.page.on('console', msg => {
-            if (msg.type() === 'error' || msg.type() === 'warn') {
+            if (msg.type() === 'error' || msg.type() === 'warn' || msg.text().startsWith('[FP]')) { // Log FP debug messages too
                 this.logger.debug(`PAGE_CONSOLE (${msg.type().toUpperCase()}): ${msg.text().substring(0, 250)}`);
             }
         });
@@ -472,7 +693,7 @@ class YouTubeViewWorker {
         await handleYouTubeConsent(this.page, this.logger);
         await sleep(nodeJsRandom(2000, 4000));
 
-        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.2).');
+        this.logger.info('enableAutoplayWithInteraction SKIPPED for v2.0 test.');
 
 
         this.logger.info('Waiting for video to load data (up to 90s)...');
@@ -501,11 +722,11 @@ class YouTubeViewWorker {
             throw new Error(`Could not confirm valid video duration after load (got ${duration}).`);
         }
         
-        this.logger.info('Temporarily SKIPPING video quality setting for stability testing (v1.9.2).');
+        this.logger.info('Temporarily SKIPPING video quality setting for v2.0 test.');
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Attempting to ensure video is playing after load (quality setting skipped)...');
-        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-simplified-test-v1.9.2'); 
+        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-simplified-v2.0'); 
         
         if (!initialPlaySuccess) {
             this.logger.warn('Initial play attempts (SIMPLIFIED ensureVideoPlaying) failed. The watchVideo loop will attempt further resumes and its own recovery mechanisms.');
@@ -571,13 +792,13 @@ class YouTubeViewWorker {
         return adWasPlayingThisCheckCycle;
     }
     
-    // Using Gemini's SIMPLIFIED ensureVideoPlaying (v1.9.2)
+    // Using Gemini's SIMPLIFIED ensureVideoPlaying
     async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
             const loggerMethod = this.logger && typeof this.logger[level] === 'function' ? this.logger[level] : console[level] || console.log;
             loggerMethod.call(this.logger || console, `[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
-        logFn(`Ensuring video is playing (SIMPLIFIED TEST v1.9.2)...`);
+        logFn(`Ensuring video is playing (SIMPLIFIED TEST v2.0)...`);
 
         try {
             await this.page.bringToFront();
@@ -828,11 +1049,8 @@ class YouTubeViewWorker {
 
                     if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
                         recoveryAttemptsThisJob++;
-                        // Reset consecutiveStallChecks for the next series *after* this recovery attempt
-                        // consecutiveStallChecks = 0; // Moved this to after successful recovery
-
                         this.logger.warn(`Max stall checks reached (${consecutiveStallChecks}). Attempting recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
-                        consecutiveStallChecks = 0; // Reset before attempting recovery
+                        consecutiveStallChecks = 0; 
 
                         let recoveryActionSuccess = false;
 
@@ -1003,7 +1221,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
-        customAntiDetection: true, // This will control if ANY custom scripts are applied (even minimal)
+        customAntiDetection: false, // Set to false to test "Pure Stealth"
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
     effectiveInput.headless = !!effectiveInput.headless;
@@ -1139,7 +1357,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
             }
             try {
                 const searchUserAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)];
-                searchBrowser = await chromium.launch(searchLaunchOptions);
+                searchBrowser = await chromium.launch(searchLaunchOptions); // Use 'chromium' from playwright-extra if not using plain 'playwright'
                 
                 const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
                 searchFingerprintProfile.userAgent = searchUserAgent;
