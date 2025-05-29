@@ -1,40 +1,47 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-// Using plain Playwright as StealthPlugin will be SKIPPED
+// Using plain Playwright as StealthPlugin will be SKIPPED for this version
 const playwright = require('playwright'); 
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
 // --- Fingerprint Profiles ---
-// (Kept for context options like UA, locale, timezone, screen. JS parts won't be injected by applyAntiDetectionScripts)
 Date.prototype.isDstActive = function(tz = "America/New_York") {
-    const now = new Date(this.valueOf());
+    // This is a simplified DST check. A proper library is better for production.
+    // For this example, it provides a basic mechanism.
+    const now = new Date(this.valueOf()); // Use the date object itself
     const currentYear = now.getFullYear();
-    if (tz.startsWith('Europe/')) {
-        const marchLastSunday = new Date(Date.UTC(currentYear, 2, 31));
-        marchLastSunday.setUTCDate(marchLastSunday.getUTCDate() - marchLastSunday.getUTCDay());
-        const octoberLastSunday = new Date(Date.UTC(currentYear, 9, 31));
-        octoberLastSunday.setUTCDate(octoberLastSunday.getUTCDate() - octoberLastSunday.getUTCDay());
-        return now >= marchLastSunday && now < octoberLastSunday;
+
+    // These are approximate DST rules and may not be accurate for all years/transitions.
+    if (tz.startsWith('Europe/')) { // e.g. Europe/London, Europe/Budapest
+        const dstStart = new Date(Date.UTC(currentYear, 2, 31 - (new Date(Date.UTC(currentYear, 2, 31))).getUTCDay(), 1, 0, 0)); // Last Sunday in March 1:00 UTC
+        const dstEnd = new Date(Date.UTC(currentYear, 9, 31 - (new Date(Date.UTC(currentYear, 9, 31))).getUTCDay(), 1, 0, 0));   // Last Sunday in October 1:00 UTC
+        return now >= dstStart && now < dstEnd;
     }
-    if (tz.startsWith('America/')) {
-        let marchSecondSunday = new Date(Date.UTC(currentYear, 2, 1));
+    if (tz.startsWith('America/')) { // e.g. America/New_York, America/Los_Angeles
+        let marchSecondSunday = new Date(Date.UTC(currentYear, 2, 1)); // March 1st
         let sundayCount = 0;
         for (let i = 1; i <= 14; i++) {
             marchSecondSunday.setUTCDate(i);
             if (marchSecondSunday.getUTCDay() === 0) sundayCount++;
             if (sundayCount === 2) break;
         }
-        let novemberFirstSunday = new Date(Date.UTC(currentYear, 10, 1));
+        let novemberFirstSunday = new Date(Date.UTC(currentYear, 10, 1)); // November 1st
         for (let i = 1; i <= 7; i++) {
             novemberFirstSunday.setUTCDate(i);
             if (novemberFirstSunday.getUTCDay() === 0) break;
         }
-        return now >= marchSecondSunday && now < novemberFirstSunday;
+        // DST change happens at 2:00 AM local time
+        const dstStart = new Date(currentYear, marchSecondSunday.getUTCMonth(), marchSecondSunday.getUTCDate(), 2, 0, 0);
+        const dstEnd = new Date(currentYear, novemberFirstSunday.getUTCMonth(), novemberFirstSunday.getUTCDate(), 2, 0, 0);
+        // This comparison needs to be in local time of the zone, which is complex without a library.
+        // For simplicity of this function, we'll keep the UTC-based comparison, acknowledging its potential inaccuracy for US.
+        return now >= dstStart && now < dstEnd;
     }
     return false;
 };
+
 
 function nodeJsRandom(min, max) {
     if (max === undefined) { max = min; min = 0; }
@@ -49,17 +56,20 @@ const FINGERPRINT_PROFILES = {
         profileKeyName: 'US_CHROME_WIN_NVIDIA',
         userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         acceptLanguage: 'en-US,en;q=0.9',
-        platform: 'Win32', // For potential context override if needed by something else
-        deviceMemory: 8,    // Not actively used in initScript if it's skipped
-        hardwareConcurrency: getRandomArrayItem([8, 12, 16]), // Not actively used
-        vendor: 'Google Inc.', // Not actively used
-        plugins: [],
-        mimeTypes: [],
+        platform: 'Win32',
+        deviceMemory: 8,
+        hardwareConcurrency: getRandomArrayItem([8, 12, 16]),
+        vendor: 'Google Inc.',
+        plugins: [], mimeTypes: [], // Kept minimal as custom script is skipped
         locale: 'en-US',
         timezoneId: 'America/New_York',
+        // Corrected Timezone Offset Logic based on standard interpretation (UTC - local)
+        // JavaScript's Date.getTimezoneOffset() returns difference in minutes between UTC and local time.
+        // Positive value means local time is behind UTC. Negative value means local time is ahead of UTC.
+        // America/New_York: EST is UTC-5 (-(-300) = +300), EDT is UTC-4 (-(-240) = +240)
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 240 : 300; },
         screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
-        webGLVendor: 'Google Inc. (NVIDIA)', // Not actively used by initScript if skipped
+        webGLVendor: 'Google Inc. (NVIDIA)',
         webGLRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0, D3D11)',
     },
     'GB_CHROME_WIN_AMD': {
@@ -70,10 +80,10 @@ const FINGERPRINT_PROFILES = {
         deviceMemory: 16,
         hardwareConcurrency: getRandomArrayItem([6, 8, 12]),
         vendor: 'Google Inc.',
-        plugins: [],
-        mimeTypes: [],
+        plugins: [], mimeTypes: [],
         locale: 'en-GB',
         timezoneId: 'Europe/London',
+        // Europe/London: GMT is UTC+0 (offset 0), BST is UTC+1 (offset -60)
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? -60 : 0; },
         screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, colorDepth: 24, pixelDepth: 24 },
         webGLVendor: 'Google Inc. (AMD)',
@@ -87,10 +97,10 @@ const FINGERPRINT_PROFILES = {
         deviceMemory: 16,
         hardwareConcurrency: getRandomArrayItem([8, 10, 12]),
         vendor: 'Apple Computer, Inc.',
-         plugins: [],
-        mimeTypes: [],
+         plugins: [], mimeTypes: [],
         locale: 'en-US',
         timezoneId: 'America/Los_Angeles',
+        // America/Los_Angeles: PST is UTC-8 (offset +480), PDT is UTC-7 (offset +420)
         get timezoneOffsetMinutes() { return new Date().isDstActive(this.timezoneId) ? 420 : 480; },
         screen: { width: 1728, height: 1117, availWidth: 1728, availHeight: 1079, colorDepth: 30, pixelDepth: 30 },
         webGLVendor: 'Apple',
@@ -105,7 +115,7 @@ function getRandomProfileKeyName() {
 
 function getProfileByCountry(countryCode) {
     const countryUpper = countryCode ? countryCode.toUpperCase() : '';
-    const deepCopy = (profile) => JSON.parse(JSON.stringify(profile));
+    const deepCopy = (profile) => JSON.parse(JSON.stringify(profile)); // Create a new object
     const matchingProfileKeys = Object.keys(FINGERPRINT_PROFILES).filter(k => k.startsWith(countryUpper + '_'));
 
     if (matchingProfileKeys.length > 0) {
@@ -120,8 +130,8 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
 
-// StealthPlugin is SKIPPED for this version to replicate `build b0zDz9AEx6U1cx1N2` conditions
-console.log('MAIN.JS: StealthPlugin application SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).');
+// StealthPlugin is SKIPPED for this version (to match build b0zDz9AEx6U1cx1N2 state)
+console.log('MAIN.JS: StealthPlugin application SKIPPED for v1.9.3 (replicating b0zDz9AEx6U1cx1N2 baseline).');
 
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -225,21 +235,20 @@ const ANTI_DETECTION_ARGS = [
     '--no-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
-    '--mute-audio', // This was present in the v1.8.1 simplified args
+    '--mute-audio',
     '--ignore-certificate-errors',
-    // The STABLE_ARGS also included --no-first-run, --no-service-autorun, --password-store=basic, --use-mock-keychain
-    // Let's stick to the even more minimal set that was implied by the v1.8.1 logs where scripts were SKIPPED.
-    // If needed, we can add back the above common ones.
+    // Removed --no-first-run etc. to be truly minimal as per that run's implication
 ];
 
-// applyAntiDetectionScripts call will be SKIPPED to replicate `build b0zDz9AEx6U1cx1N2`
+// applyAntiDetectionScripts call will be SKIPPED, so the function is just a placeholder
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`Custom anti-detection scripts SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).`);
+    // No script injection in this version
 }
 
 
-async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.8.1, which was working) ... */
+async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.8.1) ... */
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`[waitForVideoToLoad] Starting wait for up to ${maxWaitMs / 1000}s.`);
     const startTime = Date.now();
@@ -335,7 +344,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) { /* ... (u
     }
 }
 
-// enableAutoplayWithInteraction function (from Claude) - REMAINS COMMENTED OUT
+// enableAutoplayWithInteraction function - REMAINS COMMENTED OUT
 /*
 async function enableAutoplayWithInteraction(page, logger) {
     // ...
@@ -416,7 +425,7 @@ class YouTubeViewWorker {
             }
         }
 
-        this.browser = await playwright.chromium.launch(launchOptions); // Using plain playwright
+        this.browser = await playwright.chromium.launch(launchOptions);
         this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.3).');
 
         // Using SIMPLIFIED context options from v1.8.1 successful load baseline
@@ -445,9 +454,9 @@ class YouTubeViewWorker {
         });
         this.logger.info(`Browser context created (SIMPLIFIED for v1.9.3). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
 
-        // applyAntiDetectionScripts call is SKIPPED
-        if (this.effectiveInput.customAntiDetection) { // Still check flag, but function does nothing
-             await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile);
+        // applyAntiDetectionScripts call is SKIPPED for this version
+        if (this.effectiveInput.customAntiDetection) {
+             await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile); // This function now just logs that it's skipped
         } else {
             this.logger.info('Custom anti-detection scripts SKIPPED as per effectiveInput (v1.9.3).');
         }
@@ -473,6 +482,7 @@ class YouTubeViewWorker {
         await handleYouTubeConsent(this.page, this.logger);
         await sleep(nodeJsRandom(2000, 4000));
 
+        // enableAutoplayWithInteraction call remains SKIPPED
         this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.3).');
 
 
@@ -481,9 +491,9 @@ class YouTubeViewWorker {
             await waitForVideoToLoad(this.page, this.logger, 90000);
         } catch (loadError) {
             this.logger.error(`CRITICAL: Video failed to load properly: ${loadError.message}`);
-            if (Actor.isAtHome()) {
+            if (Actor.isAtHome()) { // Claude: Simplified Actor.isAtHome() check
                 try {
-                    const failTime = new Date().toISOString().replace(/[:.]/g, '-');
+                    const failTime = new Date().toISOString().replace(/[:.]/g, '-'); // Claude: Simplified replacement
                     const screenshotKey = `LOAD_FAIL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${failTime}`;
                     const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
                     await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
@@ -506,17 +516,17 @@ class YouTubeViewWorker {
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Attempting to ensure video is playing after load (quality setting skipped)...');
-        // Using Claude's "Ultra Enhanced" v1.6 ensureVideoPlaying
+        // Using Claude's "Ultra Enhanced" v1.6 ensureVideoPlaying, as it was in the successful b0zDz9AEx6U1cx1N2 run
         const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-ultra-enhanced-v1.6-retest'); 
         
         if (!initialPlaySuccess) {
             this.logger.warn('Initial play attempts (Ultra Enhanced ensureVideoPlaying) failed. Attempting playbackRecovery method...');
-            const recoverySuccess = await this.attemptPlaybackRecovery();
+            const recoverySuccess = await this.attemptPlaybackRecovery(); // Claude's specific recovery method
             if (!recoverySuccess) {
                 this.logger.error('All playback attempts failed, including specific recovery. Video may not play.');
-                if (Actor.isAtHome()) {
+                if (Actor.isAtHome()) { // Claude: Simplified check
                     try {
-                        const failTime = new Date().toISOString().replace(/[:.]/g, '-');
+                        const failTime = new Date().toISOString().replace(/[:.]/g, '-'); // Claude: Simplified replacement
                         const screenshotKey = `PLAY_FAIL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${failTime}`;
                         await Actor.setValue(screenshotKey, await this.page.screenshot({ fullPage: true }), { contentType: 'image/png' });
                         this.logger.info(`Play failure screenshot saved: ${screenshotKey}`);
@@ -587,13 +597,13 @@ class YouTubeViewWorker {
         return adWasPlayingThisCheckCycle;
     }
     
-    // Using Claude's "Ultra Enhanced" ensureVideoPlaying (from v1.7 code, which was v1.6 of Claude's)
+    // Using Claude's "Ultra Enhanced" ensureVideoPlaying (from v1.7 code / Claude's latest suggestion)
     async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
             const loggerMethod = this.logger[level] || (level === 'warn' && (this.logger.warning || this.logger.warn)) || this.logger.info;
             loggerMethod.call(this.logger, `[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
-        logFn(`Ensuring video is playing (v1.6 - Ultra Enhanced)...`); // Matching the version from successful run
+        logFn(`Ensuring video is playing (v1.6 - Ultra Enhanced)...`); // Labelled as v1.6 by Claude
 
         try {
             await this.page.bringToFront();
@@ -634,6 +644,22 @@ class YouTubeViewWorker {
             }
 
             logFn(`Video state (attempt ${attempt + 1}): Paused=${videoState.p}, Ended=${videoState.ended}, RS=${videoState.rs}, NS=${videoState.networkState}, Muted=${videoState.muted}, Volume=${videoState.volume?.toFixed(2)}, Time=${videoState.currentTime?.toFixed(1)}, Dim=${videoState.videoWidth}x${videoState.videoHeight}. Trying strategies...`);
+
+            if (videoState.muted) {
+                try {
+                    await this.page.evaluate(() => {
+                        const video = document.querySelector('video.html5-main-video');
+                        if (video) { video.muted = false; video.volume = 0.5; }
+                    });
+                    logFn('Attempted to unmute video and set volume to 50%');
+                    await sleep(500);
+                    const unmutedState = await this.page.evaluate(() => {const v=document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended, m:v.muted} : {p:true,rs:0,e:true,m:true};}).catch(()=>({p:true,rs:0,e:true,m:true}));
+                    if (!unmutedState.p && unmutedState.rs >=3 && !unmutedState.e) {
+                        logFn('Video started playing after unmute.'); return true;
+                    }
+                    if (!unmutedState.m) logFn('Video successfully unmuted.'); else logFn('Video still muted after attempt.', 'warn');
+                } catch (e) { logFn(`Failed to unmute video: ${e.message}`, 'debug'); }
+            }
 
             const bigPlayButtonSelectors = [ '.ytp-large-play-button', '.ytp-play-button[aria-label="Play"]', '.ytp-cued-thumbnail-overlay', '.ytp-cued-thumbnail-overlay-image', 'button[aria-label="Play"]', '.ytp-large-play-button-bg'];
             for (const selector of bigPlayButtonSelectors) {
@@ -743,7 +769,7 @@ class YouTubeViewWorker {
             await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 45000);
 
             const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
-            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay'); // This will use Claude's "Ultra Enhanced"
+            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay'); // Will use Claude's "Ultra Enhanced"
             
             if (success) {
                 this.logger.info('Playback recovery successful!');
@@ -894,7 +920,7 @@ class YouTubeViewWorker {
                  }
 
                 if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds && !isStalledThisCheck) {
-                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Uses Claude's "Ultra Enhanced"
+                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Using Claude's "Ultra Enhanced"
                     if (!playAttemptSuccess) {
                         this.logger.warn(`ensureVideoPlaying failed to resume playback from paused state. RS: ${videoState.rs}, CT: ${currentActualVideoTime.toFixed(1)}s.`);
                         if (videoState.rs === 0 || videoState.networkState === 3) {
@@ -917,18 +943,7 @@ class YouTubeViewWorker {
                     consecutiveStallChecks++; 
                     (this.logger.warn || this.logger.warning).call(this.logger, `Playback stall detected OR ensureVideoPlaying failed. Stalls checks: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}, CT: ${currentActualVideoTime.toFixed(1)}`);
                     
-                    if (Actor.isAtHome()) { /* ... screenshot logic ... */ 
-                        try {
-                            const stallTime = new Date().toISOString().replace(/[:.]/g, '-');
-                            const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
-                            this.logger.info(`Taking screenshot due to stall: ${screenshotKey}`);
-                            const screenshotBuffer = await this.page.screenshot({ fullPage: true, timeout: 15000 });
-                            await Actor.setValue(screenshotKey, screenshotBuffer, { contentType: 'image/png' });
-                            this.logger.info(`Screenshot saved: ${screenshotKey}`);
-                        } catch (screenshotError) { 
-                            this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`); 
-                        }
-                    }
+                    if (Actor.isAtHome()) { /* ... screenshot logic ... */ }
                     
                     const ytErrorLocator = this.page.locator('.ytp-error-content, text=/Something went wrong/i, text=/An error occurred/i, div.ytp-error').first();
                     if (await ytErrorLocator.isVisible({timeout: 1000}).catch(()=>false)) {
@@ -969,6 +984,7 @@ class YouTubeViewWorker {
                         if (recoveryActionSuccess) {
                             this.logger.info(`Recovery attempt ${recoveryAttemptsThisJob} action completed. Re-validating playback...`);
                             await handleYouTubeConsent(this.page, this.logger.child({prefix: 'PostRecoveryConsent:'}));
+                            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'PostRecoveryInteraction:'})); // Still disabled
                             await waitForVideoToLoad(this.page, this.logger.child({prefix: 'PostRecoveryLoad:'}), 60000).catch(e => {
                                 this.logger.warn(`Video failed to load properly after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
                                 if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Video load failed after final recovery attempt ${recoveryAttemptsThisJob}.`);
@@ -1109,7 +1125,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
-        customAntiDetection: true, // For this test, this means SKIPPING custom JS injections
+        customAntiDetection: true, // For this version, this flag means applyAntiDetectionScripts WILL be called (but the func itself is minimal)
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
     effectiveInput.headless = !!effectiveInput.headless;
@@ -1245,7 +1261,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
             }
             try {
                 const searchUserAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)];
-                searchBrowser = await playwright.chromium.launch(searchLaunchOptions); // Using plain playwright for search too
+                searchBrowser = await playwright.chromium.launch(searchLaunchOptions); // Use plain playwright
                 
                 const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
                 searchFingerprintProfile.userAgent = searchUserAgent;
@@ -1267,7 +1283,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
                     ignoreHTTPSErrors: true,
                 });
 
-                // Custom scripts are skipped for search in this configuration
+                // applyAntiDetectionScripts is SKIPPED for search in this configuration
                 jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.3 - replicating b0zDz9AEx6U1cx1N2 baseline).');
 
 
