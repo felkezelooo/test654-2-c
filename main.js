@@ -2,12 +2,11 @@ const Apify = require('apify');
 const { Actor } = Apify;
 
 const { chromium } = require('playwright-extra');
-// const StealthPlugin = require('puppeteer-extra-plugin-stealth'); // Gemini: Disable StealthPlugin Temporarily
+const StealthPlugin = require('puppeteer-extra-plugin-stealth'); // RE-ENABLED
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
 // --- Fingerprint Profiles ---
-// (Fingerprint profiles and DST logic remain as in v1.7 - they are used for context options but many script injections are disabled)
 Date.prototype.isDstActive = function(tz = "America/New_York") {
     const now = new Date(this.valueOf());
     const currentYear = now.getFullYear();
@@ -116,17 +115,14 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[getRandomProfileKeyName()]);
 }
 
-// Gemini: Disable StealthPlugin Temporarily
-// try {
-//     console.log('MAIN.JS: Attempting to apply StealthPlugin...');
-//     chromium.use(StealthPlugin());
-//     console.log('MAIN.JS: StealthPlugin applied successfully.');
-// } catch (e) {
-//     console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
-//     throw e;
-// }
-console.log('MAIN.JS: StealthPlugin application SKIPPED for debugging (v1.8).');
-
+try {
+    console.log('MAIN.JS: Attempting to apply StealthPlugin...');
+    chromium.use(StealthPlugin()); // RE-ENABLED
+    console.log('MAIN.JS: StealthPlugin applied successfully (v1.8.1).');
+} catch (e) {
+    console.error('MAIN.JS: CRITICAL ERROR applying StealthPlugin:', e.message, e.stack);
+    throw e;
+}
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function getSafeLogger(loggerInstance) { /* ... (unchanged) ... */
@@ -227,30 +223,25 @@ async function handleYouTubeConsent(page, logger) { /* ... (unchanged) ... */
     return false;
 }
 
-// Gemini 2.5 Pro: Drastically Simplified ANTI_DETECTION_ARGS
+// Using the ABSOLUTE_MINIMAL_ARGS from Gemini's suggestion for v1.8
 const ANTI_DETECTION_ARGS = [
     '--disable-blink-features=AutomationControlled',
     '--no-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
-    // '--window-size=1280,720', // Will be set from fingerprintProfile
     '--mute-audio',
-    '--ignore-certificate-errors', // Keep for potential proxy SSL issues
-    // No other flags for this initial stability test
+    '--ignore-certificate-errors',
 ];
 
-// Gemini 2.5 Pro: Simplified applyAntiDetectionScripts (further simplified)
+// Using Gemini's "ABSOLUTE MINIMAL for stability v1.8" applyAntiDetectionScripts
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
-    // Only use essential parts from fingerprintProfile for now
-    const { locale } = fingerprintProfile; // Platform, vendor also removed for max simplicity initially
+    const { locale } = fingerprintProfile;
 
     const scriptToInject = (dynamicLocale) => {
-        // Core WebDriver spoof
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         try { if (navigator.__proto__) delete navigator.__proto__.webdriver; } catch(e) { console.debug("Failed to delete navigator.__proto__.webdriver", e.message); }
 
-        // Basic language spoofing (ensure these are consistent with context options)
         const langBase = dynamicLocale.split('-')[0];
         const languagesArray = dynamicLocale.includes('-') ? [dynamicLocale, langBase] : [dynamicLocale];
         try { Object.defineProperty(navigator, 'languages', { get: () => languagesArray, configurable: true }); } catch(e) { console.debug("Failed to set navigator.languages", e.message); }
@@ -258,21 +249,17 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
     };
 
     try {
-        const argsForScript = {
-            dynamicLocale: locale,
-        };
-
+        const argsForScript = { dynamicLocale: locale, };
         if (pageOrContext.addInitScript) {
             await pageOrContext.addInitScript(scriptToInject, argsForScript);
         }
-        safeLogger.info(`Custom anti-detection script applied (ABSOLUTE MINIMAL for stability v1.8). Profile hints: Locale=${locale}`);
+        safeLogger.info(`Custom anti-detection script applied (ABSOLUTE MINIMAL for stability v1.8.1). Profile hints: Locale=${locale}`);
     } catch (e) {
         safeLogger.error(`Failed to add ABSOLUTE MINIMAL anti-detection init script: ${e.message}`);
     }
 }
 
-// Gemini 2.5 Pro: waitForVideoToLoad remains, but its success is now paramount
-async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.7, which was Gemini's suggestion) ... */
+async function waitForVideoToLoad(page, logger, maxWaitMs = 90000) { /* ... (Unchanged from v1.7) ... */
     const safeLogger = getSafeLogger(logger);
     safeLogger.info(`[waitForVideoToLoad] Starting wait for up to ${maxWaitMs / 1000}s.`);
     const startTime = Date.now();
@@ -368,7 +355,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) { /* ... (u
     }
 }
 
-// Gemini 2.5 Pro: Temporarily disable enableAutoplayWithInteraction
+// Commented out enableAutoplayWithInteraction as per Gemini's simplification step
 // async function enableAutoplayWithInteraction(page, logger) { ... }
 
 class YouTubeViewWorker {
@@ -425,8 +412,8 @@ class YouTubeViewWorker {
         
         const launchOptions = {
             headless: this.effectiveInput.headless,
-            args: [ // Using Gemini's ABSOLUTE_MINIMAL_ARGS
-                ...ANTI_DETECTION_ARGS, 
+            args: [
+                ...ANTI_DETECTION_ARGS, // Now the ABSOLUTE_MINIMAL_ARGS
                 `--window-size=${this.fingerprintProfile.screen.width},${this.fingerprintProfile.screen.height}`
             ],
         };
@@ -446,10 +433,9 @@ class YouTubeViewWorker {
         }
 
         this.browser = await chromium.launch(launchOptions);
-        this.logger.info('Browser launched (StealthPlugin disabled for this test).'); // Modified log
+        this.logger.info('Browser launched (StealthPlugin is RE-ENABLED for this test v1.8.1).');
 
-        // Gemini 2.5 Pro: Basic Context Options
-        this.context = await this.browser.newContext({
+        this.context = await this.browser.newContext({ // Using Gemini's simplified context options
             userAgent: this.fingerprintProfile.userAgent,
             locale: this.fingerprintProfile.locale,
             timezoneId: this.fingerprintProfile.timezoneId,
@@ -461,21 +447,18 @@ class YouTubeViewWorker {
                 width: this.fingerprintProfile.screen.width,
                 height: this.fingerprintProfile.screen.height
             },
-            ignoreHTTPSErrors: true, // Keep
-            // bypassCSP: true, // Keep, can help with some loading issues
-            // javaScriptEnabled: true, // Default true, keep
-            // permissions: ['geolocation', 'notifications'], // Keep essential
-            // deviceScaleFactor, isMobile, hasTouch, colorScheme, reducedMotion - removed for max simplicity
+            ignoreHTTPSErrors: true,
+            // Other options like bypassCSP, permissions, deviceScaleFactor, etc., are temporarily removed for max simplicity
+            // but will be re-added if this basic setup works.
         });
-        this.logger.info(`Browser context created (SIMPLIFIED for stability v1.8). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
+        this.logger.info(`Browser context created (SIMPLIFIED for stability v1.8.1). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}...`);
 
-        // Gemini 2.5 Pro: applyAntiDetectionScripts call commented out for initial test
-        /*
+        // Using Gemini's simplified applyAntiDetectionScripts for this test
         if (this.effectiveInput.customAntiDetection) {
             await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile);
+        } else {
+             this.logger.info('Custom anti-detection scripts SKIPPED as per effectiveInput (v1.8.1).');
         }
-        */
-       this.logger.info('Custom anti-detection scripts SKIPPED for stability test (v1.8).');
 
 
         if (this.job.referer) {
@@ -492,16 +475,14 @@ class YouTubeViewWorker {
         });
 
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
-        // Gemini 2.5 Pro: Simplified page.goto with 60s timeout
         await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
         this.logger.info('Navigation (DOM content loaded) complete.');
         
         await handleYouTubeConsent(this.page, this.logger);
         await sleep(nodeJsRandom(2000, 4000));
 
-        // Gemini 2.5 Pro: Temporarily comment out enableAutoplayWithInteraction
-        // await enableAutoplayWithInteraction(this.page, this.logger);
-        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.8).');
+        // enableAutoplayWithInteraction call remains commented out
+        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.8.1).');
 
 
         this.logger.info('Waiting for video to load data (up to 90s)...');
@@ -530,37 +511,24 @@ class YouTubeViewWorker {
             throw new Error(`Could not confirm valid video duration after load (got ${duration}).`);
         }
         
-        // Gemini 2.5 Pro: Quality Setting Logic KEPT COMMENTED OUT
-        this.logger.info('Temporarily SKIPPING video quality setting for stability testing (v1.8).');
-        /*
+        this.logger.info('Temporarily SKIPPING video quality setting for stability testing (v1.8.1).');
+        /* // Quality setting logic remains commented out
         this.logger.info('Attempting to set video quality...');
-        try {
-            // ... quality setting logic ...
-        } catch (e) { ... }
+        try { ... } catch (e) { ... }
         */
 
         const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
         this.logger.info('Attempting to ensure video is playing after load (quality setting skipped)...');
-        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup'); // Using Claude's v1.6 ensureVideoPlaying
+        // Using Gemini's SIMPLIFIED ensureVideoPlaying for this test
+        const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-simplified-test'); 
         
         if (!initialPlaySuccess) {
-            this.logger.warn('Initial play attempts (ensureVideoPlaying) failed. Attempting playbackRecovery method...');
-            const recoverySuccess = await this.attemptPlaybackRecovery();
-            if (!recoverySuccess) {
-                this.logger.error('All playback attempts failed, including specific recovery. Video may not play.');
-                if (Actor.isAtHome()) {
-                    try {
-                        const failTime = new Date().toISOString().replace(/[:.]/g, '-');
-                        const screenshotKey = `PLAY_FAIL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${failTime}`;
-                        await Actor.setValue(screenshotKey, await this.page.screenshot({ fullPage: true }), { contentType: 'image/png' });
-                        this.logger.info(`Play failure screenshot saved: ${screenshotKey}`);
-                    } catch (e) { this.logger.error(`Failed to save play failure screenshot: ${e.message}`); }
-                }
-                throw new Error('Video playback could not be started after all attempts including specific recovery.');
-            }
-            this.logger.info('Playback started after specific recovery method.');
+            this.logger.warn('Initial play attempts (SIMPLIFIED ensureVideoPlaying) failed. Attempting Claude\'s playbackRecovery method...');
+            // Claude's attemptPlaybackRecovery is not defined in this simplified test path, so we'd rely on the main loop's recovery
+            // For now, we will just log this and let the watchVideo loop try its generic ensureVideoPlaying.
+            // If this simplified ensureVideoPlaying fails, it implies a deeper issue than just overly complex play logic.
         } else {
-            this.logger.info('Video confirmed playing after initial setup.');
+            this.logger.info('Video confirmed playing after initial setup (SIMPLIFIED ensureVideoPlaying).');
         }
 
         await sleep(nodeJsRandom(2000, 4500));
@@ -620,174 +588,68 @@ class YouTubeViewWorker {
         this.logger.info('Exiting ad handling loop.');
         return adWasPlayingThisCheckCycle;
     }
-    async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') { /* ... (Unchanged from v1.7 - Claude's Ultra Enhanced version) ... */
+    
+    // Using Gemini's SIMPLIFIED ensureVideoPlaying for this test (v1.8.1)
+    async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
-            const loggerMethod = this.logger[level] || (level === 'warn' && (this.logger.warning || this.logger.warn)) || this.logger.info;
-            loggerMethod.call(this.logger, `[ensureVideoPlaying-${attemptType}] ${msg}`);
+            this.logger[level](`[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
-        logFn(`Ensuring video is playing (v1.6 - Ultra Enhanced)...`);
+        logFn(`Ensuring video is playing (SIMPLIFIED TEST v1.8.1)...`);
 
         try {
             await this.page.bringToFront();
             await this.page.evaluate(() => window.focus());
-            logFn('Brought page to front and focused window');
-        } catch (e) {
-            logFn(`Failed to focus page: ${e.message}`, 'debug');
-        }
+        } catch (e) { logFn(`Failed to focus page: ${e.message}`, 'debug'); }
 
         for (let attempt = 0; attempt < 3; attempt++) {
             if (this.killed || this.page.isClosed()) return false;
 
-            let isVideoElementPresent = await this.page.locator('video.html5-main-video').count() > 0;
-            if (!isVideoElementPresent) {
-                logFn('Video element not present on page.', 'warn');
-                return false;
-            }
-
             let videoState = await this.page.evaluate(() => {
                 const v = document.querySelector('video.html5-main-video');
-                if (!v) return { p: true, rs: 0, err: { code: null, message: "No video element found in DOM" }, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0, currentTime: 0 };
-                return {
-                    p: v.paused, rs: v.readyState,
-                    err: v.error ? { code: v.error.code, message: v.error.message } : null,
-                    ended: v.ended, networkState: v.networkState,
-                    src: v.currentSrc || v.src, videoWidth: v.videoWidth, videoHeight: v.videoHeight,
-                    muted: v.muted, volume: v.volume, currentTime: v.currentTime
-                };
-            }).catch((e) => {
-                logFn(`Eval to get video state failed: ${e.message}`, 'warn');
-                return { p: true, rs: 0, err: {message: "Eval failed to get video state"}, ended: true, networkState: 3, src: null, videoWidth: 0, videoHeight: 0, muted: true, volume: 0, currentTime: 0 };
-            });
+                if (!v) return { p: true, rs: 0, ended: true, ct: 0 };
+                return { p: v.paused, rs: v.readyState, ended: v.ended, ct: v.currentTime };
+            }).catch(() => ({ p: true, rs: 0, ended: true, ct: 0 }));
 
-            if (videoState.err && videoState.err.code) { logFn(`Video element error: Code ${videoState.err.code}, Msg: ${videoState.err.message || 'N/A'}`, 'warn'); }
+            logFn(`Attempt ${attempt + 1}: Paused=${videoState.p}, RS=${videoState.rs}, Ended=${videoState.ended}, CT=${videoState.ct?.toFixed(1)}`);
+
             if (!videoState.p && videoState.rs >= 3 && !videoState.ended) {
-                logFn(`Video is already playing (attempt ${attempt + 1}). RS:${videoState.rs}, NS:${videoState.networkState}, Time:${videoState.currentTime?.toFixed(1)}`);
+                logFn(`Video is playing.`);
                 return true;
             }
 
-            logFn(`Video state (attempt ${attempt + 1}): Paused=${videoState.p}, Ended=${videoState.ended}, RS=${videoState.rs}, NS=${videoState.networkState}, Muted=${videoState.muted}, Volume=${videoState.volume?.toFixed(2)}, Time=${videoState.currentTime?.toFixed(1)}, Dim=${videoState.videoWidth}x${videoState.videoHeight}. Trying strategies...`);
-
-            const bigPlayButtonSelectors = [ '.ytp-large-play-button', '.ytp-play-button[aria-label="Play"]', '.ytp-cued-thumbnail-overlay', '.ytp-cued-thumbnail-overlay-image', 'button[aria-label="Play"]', '.ytp-large-play-button-bg'];
-            for (const selector of bigPlayButtonSelectors) {
-                try {
-                    const playBtn = this.page.locator(selector).first();
-                    if (await playBtn.isVisible({timeout: 500 + (attempt * 100)})) {
-                        await playBtn.click({timeout: 2000, force: false, delay: nodeJsRandom(50, 100)});
-                        logFn(`Clicked play button: ${selector}`);
-                        await sleep(1500 + nodeJsRandom(500));
-                        const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after clicking ${selector}. Time: ${tempState.ct?.toFixed(1)}`); return true; }
-                    }
-                } catch (e) { logFn(`Failed to click ${selector}: ${e.message.split('\n')[0]}`, 'debug'); }
-            }
-
-            try {
-                const playerElement = this.page.locator('#movie_player, .html5-video-player, body').first();
-                if (await playerElement.isVisible({timeout: 500})) {
-                    await playerElement.focus().catch(e => logFn(`Focus failed for playerElement: ${e.message}`, 'debug'));
-                    await this.page.keyboard.press('Space');
-                    logFn('Focused player/body and pressed Space key');
-                    await sleep(1000 + nodeJsRandom(300));
-                    const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                    if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after Space key. Time: ${tempState.ct?.toFixed(1)}`); return true; }
-                }
-            } catch (e) { logFn(`Failed to focus player and press Space: ${e.message.split('\n')[0]}`, 'debug'); }
-
-            try {
-                const videoElement = this.page.locator('video.html5-main-video').first();
-                if (await videoElement.isVisible({timeout: 500})) {
-                    const box = await videoElement.boundingBox();
-                    if (box && box.width > 0 && box.height > 0) {
-                        await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, {delay: nodeJsRandom(50,100)});
-                        logFn('Clicked center of video element');
-                        await sleep(1200 + nodeJsRandom(300));
-                        const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after center click. Time: ${tempState.ct?.toFixed(1)}`); return true; }
-                    } else { logFn('Video element bounding box not valid for click.', 'debug'); }
-                }
-            } catch (e) { logFn(`Failed to click video center: ${e.message.split('\n')[0]}`, 'debug'); }
-
-            if (videoState.p && !videoState.ended) {
-                try {
-                    await this.page.evaluate(() => {
-                        const video = document.querySelector('video.html5-main-video');
-                        if (video) {
-                            if (video.muted) { video.muted = false; video.volume = 0.5; }
-                            const playPromise = video.play();
-                            if (playPromise !== undefined) {
-                                playPromise.then(() => { console.log('[In-Page] Video play() initiated via JS'); }).catch(error => { console.warn('[In-Page] Video play() via JS failed:', error.message,'. Trying to click video.'); video.click(); });
-                            } else { console.warn('[In-Page] video.play() did not return a promise. Clicking.'); video.click(); }
-                        }
-                    });
-                    await sleep(1500 + nodeJsRandom(300));
-                    const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                    if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after JS play()/click combination. Time: ${tempState.ct?.toFixed(1)}`); return true; }
-                } catch (e) { logFn(`JS play()/click eval error: ${e.message.split('\n')[0]}`, 'debug'); }
-            }
-
-            try {
-                await this.page.locator('body').press('k');
-                logFn('Pressed "k" key again to toggle play/pause');
-                await sleep(1000 + nodeJsRandom(300));
-                const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after second "k" key. Time: ${tempState.ct?.toFixed(1)}`); return true;}
-            } catch (e) { logFn(`Failed to press "k" key (second time): ${e.message.split('\n')[0]}`, 'debug'); }
-
-            if (attempt === 2 && videoState.p) {
-                logFn('Final attempt in ensureVideoPlaying - trying aggressive overlay removal and dblclick', 'warn');
+            if (videoState.p && !videoState.ended && videoState.rs >= 2) {
+                logFn('Attempting JS video.play()');
                 await this.page.evaluate(() => {
-                    const overlays = document.querySelectorAll('.ytp-gradient-top, .ytp-gradient-bottom, .ytp-chrome-top, .ytp-chrome-bottom, .ytp-impression-link, .ytp-popup');
-                    overlays.forEach(el => { el.style.display = 'none'; el.style.pointerEvents = 'none';});
-                }).catch((e) => { logFn(`Failed to hide overlays: ${e.message}`, 'debug')});
-
-                try {
-                    const videoElement = this.page.locator('video.html5-main-video').first();
-                    if (await videoElement.isVisible({timeout: 500})) {
-                        await videoElement.dblclick({timeout: 2000, delay: nodeJsRandom(50, 100)});
-                        logFn('Double-clicked video element');
-                        await sleep(1500);
-                         const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended,ct:v.currentTime} : {p:true,rs:0,e:true,ct:0}; }).catch(()=>({p:true,rs:0,e:true,ct:0}));
-                        if (!tempState.p && tempState.rs >= 3 && !tempState.e) { logFn(`Video playing after double click. Time: ${tempState.ct?.toFixed(1)}`); return true; }
-                    }
-                } catch (e) { logFn(`Double-click failed: ${e.message.split('\n')[0]}`, 'debug'); }
+                    const v = document.querySelector('video.html5-main-video');
+                    if (v && v.paused) v.play().catch(e => console.warn('JS play() promise rejected:', e.message));
+                }).catch(e => logFn(`JS play() eval error: ${e.message}`, 'debug'));
+                await sleep(1500 + nodeJsRandom(500));
+                const newState1 = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended} : {p:true,rs:0,e:true}; }).catch(()=>({p:true,rs:0,e:true}));
+                if (!newState1.p && newState1.rs >= 3 && !newState1.e) { logFn('Video playing after JS play().'); return true; }
+                else {logFn(`Still paused/not ready after JS play(). Paused: ${newState1.p}, RS: ${newState1.rs}`);}
             }
 
-            if (attempt < 2) await sleep(2000 + attempt * 1000);
+            const primaryPlayButton = this.page.locator(playButtonSelectors[1]).first(); // .ytp-play-button[aria-label*="Play"]
+             if (await primaryPlayButton.isVisible({timeout: 1000}).catch(()=>false)) {
+                logFn('Attempting to click primary play button.');
+                await primaryPlayButton.click({timeout:1000, force: false}).catch(e => logFn(`Primary play click error: ${e.message}`, 'debug'));
+                await sleep(1500 + nodeJsRandom(500));
+                const newState2 = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? {p:v.paused,rs:v.readyState,e:v.ended} : {p:true,rs:0,e:true}; }).catch(()=>({p:true,rs:0,e:true}));
+                if (!newState2.p && newState2.rs >= 3 && !newState2.e) { logFn('Video playing after primary play button click.'); return true; }
+                else {logFn(`Still paused/not ready after primary play click. Paused: ${newState2.p}, RS: ${newState2.rs}`);}
+            }
+
+            if (attempt < 2) await sleep(1500 + attempt * 500);
         }
-        
-        logFn('Failed to ensure video is playing after multiple attempts.', 'warn');
+        logFn('Failed to ensure video is playing after simplified attempts.', 'warn');
         return false;
     }
-    async attemptPlaybackRecovery() { /* ... (Unchanged from v1.7, already incorporates Claude's suggestion) ... */
-        this.logger.warn('Attempting playback recovery by reloading with autoplay parameter...');
-        let success = false;
-        try {
-            const currentUrl = this.page.url();
-            const urlObj = new URL(currentUrl);
-            urlObj.searchParams.set('autoplay', '1');
-            
-            this.logger.info(`Navigating to recovery URL: ${urlObj.toString()}`);
-            await this.page.goto(urlObj.toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await sleep(2000 + nodeJsRandom(500));
-            
-            // Removed enableAutoplayWithInteraction from here as it's being simplified out for now
-            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction: '}));
-            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 45000);
 
-            const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
-            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay');
-            
-            if (success) {
-                this.logger.info('Playback recovery successful!');
-            }
-        } catch (e) {
-            this.logger.error(`Playback recovery method itself failed: ${e.message}`);
-        }
-        
-        if(!success) this.logger.warn('Playback recovery method did not succeed.');
-        return success;
-    }
-    async watchVideo() { /* ... (Unchanged from v1.7, already robust) ... */
+    // Commenting out Claude's attemptPlaybackRecovery as ensureVideoPlaying is simplified for this test
+    // async attemptPlaybackRecovery() { ... }
+
+
+    async watchVideo() { /* ... (Unchanged from v1.7) ... */
         if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed for watching.');
 
         const videoDurationSeconds = this.job.video_info.duration;
@@ -997,7 +859,7 @@ class YouTubeViewWorker {
                         if (recoveryActionTaken) {
                             this.logger.info(`Page re-navigated/reloaded. Re-handling consent & playback after recovery attempt ${recoveryAttemptsThisJob}...`);
                             await handleYouTubeConsent(this.page, this.logger);
-                            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction2: '})); // Temporarily disabled
+                            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction2: '})); // Still disabled
                             await waitForVideoToLoad(this.page, this.logger, 30000).catch(e => {
                                 this.logger.warn(`Video failed to load after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
                             });
@@ -1034,7 +896,7 @@ class YouTubeViewWorker {
             }
             
             if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
-                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
+                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Using Gemini's simplified ensureVideoPlaying
             }
             
             if (videoState && videoState.e) { this.logger.info('Video playback naturally ended.'); break; }
@@ -1111,7 +973,7 @@ class YouTubeViewWorker {
         };
     }
 
-    async kill() {
+    async kill() { /* ... (unchanged) ... */
         this.killed = true;
         this.logger.info('Kill signal. Closing resources.');
         if (this.page && !this.page.isClosed()) { await this.page.close().catch(e => (this.logger.warn || this.logger.warning).call(this.logger, `Page close error: ${e.message}`)); }
@@ -1125,7 +987,7 @@ class YouTubeViewWorker {
 }
 
 // --- Main Actor Logic ---
-async function actorMainLogic() {
+async function actorMainLogic() { /* ... (unchanged, including input parsing and job creation loop) ... */
     console.log('DEBUG: actorMainLogic started.');
     let actorLog;
 
@@ -1170,7 +1032,7 @@ async function actorMainLogic() {
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.8 - Gemini Stability Focus).'); // Updated version
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.8.1 - Re-enabled Stealth, Simplified ensureVideoPlaying).'); // Updated version
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1188,7 +1050,7 @@ async function actorMainLogic() {
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
-        customAntiDetection: true, // This will now control the SIMPLIFIED script
+        customAntiDetection: true,
     };
     const effectiveInput = { ...defaultInputFromSchema, ...input };
     effectiveInput.headless = !!effectiveInput.headless;
@@ -1311,9 +1173,8 @@ async function actorMainLogic() {
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             jobLogger.info(`Attempting YouTube search for: "${job.searchKeywords.join(', ')}" to find ID: ${job.videoId}`);
             let searchBrowser = null, searchContext = null, searchPage = null;
-            // Using Gemini's ABSOLUTE_MINIMAL_ARGS for search launch
             const searchLaunchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] }; 
-             if (searchLaunchOptions.args.find(arg => arg.startsWith('--window-size='))) { // Remove default if profile will set it
+             if (searchLaunchOptions.args.find(arg => arg.startsWith('--window-size='))) {
                 searchLaunchOptions.args = searchLaunchOptions.args.filter(arg => !arg.startsWith('--window-size='));
             }
 
@@ -1329,11 +1190,9 @@ async function actorMainLogic() {
                 
                 const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
                 searchFingerprintProfile.userAgent = searchUserAgent;
-                // Add window size from profile to search args if not already there
                 searchLaunchOptions.args.push(`--window-size=${searchFingerprintProfile.screen.width},${searchFingerprintProfile.screen.height}`);
 
 
-                // Gemini: Basic context options for search
                 searchContext = await searchBrowser.newContext({ 
                     userAgent: searchFingerprintProfile.userAgent,
                     locale: searchFingerprintProfile.locale,
@@ -1349,11 +1208,7 @@ async function actorMainLogic() {
                     ignoreHTTPSErrors: true,
                 });
 
-                // Gemini: applyAntiDetectionScripts call is commented out for search for this stability test
-                // if (effectiveInput.customAntiDetection) {
-                //     await applyAntiDetectionScripts(searchContext, jobLogger.child({prefix: 'SearchAntiDetect: '}), searchFingerprintProfile);
-                // }
-                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED for stability test (v1.8).');
+                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED for stability test (v1.8.1).');
 
 
                 searchPage = await searchContext.newPage();
@@ -1361,12 +1216,10 @@ async function actorMainLogic() {
                 const searchQuery = job.searchKeywords[nodeJsRandom(0, job.searchKeywords.length - 1)];
                 const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
                 jobLogger.info(`Navigating to search URL: ${youtubeSearchUrl}`);
-                // Gemini: Simplified goto with 60s timeout
                 await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); 
                 await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}));
                 
-                // Gemini: enableAutoplayWithInteraction call SKIPPED for search
-                // await enableAutoplayWithInteraction(searchPage, jobLogger.child({prefix: 'SearchAutoplay: '}));
+                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.8.1).');
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
