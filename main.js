@@ -1,7 +1,6 @@
 const Apify = require('apify');
 const { Actor } = Apify;
 
-// Using plain Playwright as StealthPlugin will be SKIPPED
 const playwright = require('playwright');
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
@@ -11,24 +10,22 @@ Date.prototype.isDstActive = function(tz = "America/New_York") {
     const now = new Date(this.valueOf());
     const currentYear = now.getFullYear();
     if (tz.startsWith('Europe/')) {
-        const marchLastSunday = new Date(Date.UTC(currentYear, 2, 31)); // Month is 0-indexed, so 2 is March
+        const marchLastSunday = new Date(Date.UTC(currentYear, 2, 31));
         marchLastSunday.setUTCDate(marchLastSunday.getUTCDate() - marchLastSunday.getUTCDay());
-        const octoberLastSunday = new Date(Date.UTC(currentYear, 9, 31)); // 9 is October
+        const octoberLastSunday = new Date(Date.UTC(currentYear, 9, 31));
         octoberLastSunday.setUTCDate(octoberLastSunday.getUTCDate() - octoberLastSunday.getUTCDay());
         return now >= marchLastSunday && now < octoberLastSunday;
     }
     if (tz.startsWith('America/')) {
-        // DST starts on the second Sunday in March
-        let marchSecondSunday = new Date(Date.UTC(currentYear, 2, 1)); // March 1st
+        let marchSecondSunday = new Date(Date.UTC(currentYear, 2, 1));
         let sundayCount = 0;
-        for (let i = 1; i <= 14; i++) { // Check up to the 14th
+        for (let i = 1; i <= 14; i++) {
             marchSecondSunday.setUTCDate(i);
             if (marchSecondSunday.getUTCDay() === 0) sundayCount++;
             if (sundayCount === 2) break;
         }
-        // DST ends on the first Sunday in November
-        let novemberFirstSunday = new Date(Date.UTC(currentYear, 10, 1)); // November 1st
-        for (let i = 1; i <= 7; i++) { // Check up to the 7th
+        let novemberFirstSunday = new Date(Date.UTC(currentYear, 10, 1));
+        for (let i = 1; i <= 7; i++) {
             novemberFirstSunday.setUTCDate(i);
             if (novemberFirstSunday.getUTCDay() === 0) break;
         }
@@ -138,7 +135,7 @@ function getProfileByCountry(countryCode) {
     return deepCopy(FINGERPRINT_PROFILES[randomKey]);
 }
 
-console.log('MAIN.JS: StealthPlugin application SKIPPED for v1.9.6 (replicating b0zDz9AEx6U1cx1N2 baseline).');
+console.log('MAIN.JS: StealthPlugin application SKIPPED for v1.9.7 (replicating b0zDz9AEx6U1cx1N2 baseline).');
 
 
 async function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -212,27 +209,60 @@ function extractVideoIdFromUrl(url, logger) {
     return null;
 }
 
-async function handleYouTubeConsent(page, logger, attempt = 1, maxAttempts = 2) {
+async function handleYouTubeConsent(page, logger, attempt = 1, maxAttempts = 3) { // maxAttempts increased
     const safeLogger = getSafeLogger(logger);
-    safeLogger.info(`Checking for YouTube consent dialog (attempt ${attempt}/${maxAttempts})...`);
+    safeLogger.info(`Checking for YouTube consent dialog (attempt ${attempt}/${maxAttempts})... Current URL: ${page.url().substring(0,100)}`);
+    
+    // More specific selectors first, then broader ones.
+    // Added selectors for the "Confirm your settings" flow based on provided HTML.
     const consentButtonSelectors = [
-        'button[aria-label*="Accept all"]', 'button[aria-label*="Accept the use of cookies"]',
-        'button[aria-label*="Agree to all"]', 'button[aria-label*="Agree"]',
-        'div[role="dialog"] button:has-text("Accept all")', 'div[role="dialog"] button:has-text("Agree")',
-        'ytd-button-renderer:has-text("Accept all")', 'tp-yt-paper-button:has-text("ACCEPT ALL")',
+        // Standard "Accept All" type buttons
+        'button[aria-label*="Accept all"]', 
+        'button[aria-label*="Accept the use of cookies"]',
+        'button[aria-label*="Agree to all"]', 
+        'button[aria-label*="Agree"]',
+        'ytd-button-renderer:has-text("Accept all")', 
+        'tp-yt-paper-button:has-text("ACCEPT ALL")',
         '#introAgreeButton',
+        // For "Confirm your settings" flow
+        'form[action="https://consent.youtube.com/save"] button:has(span:text-is("Confirm your settings"))', // Exact match from HTML
+        'form[action*="consent.youtube.com/save"] button[jsname="j6LnYe"]', // jsname from "Confirm"
+        'button:has-text("Confirm")', // More generic confirm
+        // Generic fallback if others fail (could be risky)
         'form[action*="consent.youtube.com"] button[type="submit"]',
         'div[class*="consent"] button[class*="accept"]',
-        'button:has(span:text-is("Accept all"))',
-        'button:has(span:text-is("Reject all")) + button',
+        'button:has(span:text-is("Accept all"))', 
     ];
-    const consentDialogSelector = 'ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"], div[aria-modal="true"]:has(h1:text-is("Before you continue to YouTube"))';
+    // Broader dialog selector
+    const consentDialogSelector = 'ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[role="dialog"], div[aria-modal="true"]:has(h1:text-matches(/Before you continue/i)), div[class*="consent-form"], form[action*="consent.youtube.com/save"]';
     const consentVisibilityTimeout = 7000;
 
     let consentDialog = page.locator(consentDialogSelector).first();
     let dialogInitiallyVisible = false;
     try {
-        dialogInitiallyVisible = await consentDialog.isVisible({ timeout: consentVisibilityTimeout });
+        // Try to switch to an iframe if the main dialog isn't found.
+        // This is a very basic iframe check; more robust iframe handling might be needed.
+        const iframes = page.frames();
+        let foundInIframe = false;
+        for (const frame of iframes) {
+            try {
+                consentDialog = frame.locator(consentDialogSelector).first();
+                if (await consentDialog.isVisible({ timeout: 1000 }).catch(() => false)) {
+                    safeLogger.info('Consent dialog detected within an iframe.');
+                    page = frame; // Switch page context to the iframe
+                    dialogInitiallyVisible = true;
+                    foundInIframe = true;
+                    break;
+                }
+            } catch (iframeError) {
+                safeLogger.debug(`Error checking iframe for consent: ${iframeError.message.split('\n')[0]}`);
+            }
+        }
+        if (!foundInIframe) {
+            consentDialog = page.locator(consentDialogSelector).first(); // Reset to main page if not in iframe
+            dialogInitiallyVisible = await consentDialog.isVisible({ timeout: consentVisibilityTimeout });
+        }
+
     } catch (e) {
         safeLogger.debug(`Consent dialog visibility check timed out or failed: ${e.message.split('\n')[0]}`);
     }
@@ -241,31 +271,32 @@ async function handleYouTubeConsent(page, logger, attempt = 1, maxAttempts = 2) 
         safeLogger.info('Consent dialog element IS visible.');
         for (const selector of consentButtonSelectors) {
             try {
-                const button = page.locator(selector).first();
+                const button = page.locator(selector).first(); // page context might be an iframe here
                 if (await button.isVisible({ timeout: consentVisibilityTimeout / 2 })) {
                     safeLogger.info(`Consent button found: "${selector}". Attempting to click.`);
-                    await button.click({ timeout: 3000, force: true });
-                    await page.waitForTimeout(1500 + nodeJsRandom(500, 1500));
+                    await button.click({ timeout: 3000, force: true, noWaitAfter: false }); // noWaitAfter:false might be safer here
+                    await page.waitForTimeout(2000 + nodeJsRandom(500, 1500)); // Longer wait after click
                     safeLogger.info('Consent button clicked.');
                     
-                    consentDialog = page.locator(consentDialogSelector).first();
-                    if (!await consentDialog.isVisible({ timeout: 2000 }).catch(() => false)) {
+                    // Re-check if dialog is gone more reliably from the main page context
+                    const mainPageConsentDialog = (page.parentFrame() || page).locator(consentDialogSelector).first();
+                    if (!await mainPageConsentDialog.isVisible({ timeout: 3000 }).catch(() => false)) {
                         safeLogger.info('Consent dialog successfully dismissed.');
                         return true;
                     } else {
-                        (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Clicked consent, but a dialog might still be visible after click.');
+                        (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Clicked consent, but a dialog (or part of it) might still be visible after click.');
                     }
-                    return true;
+                    return true; 
                 }
             } catch (e) {
                 safeLogger.debug(`Consent selector "${selector}" not actionable/error: ${e.message.split('\n')[0]}`);
             }
         }
-        (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Consent dialog was visible, but no known accept button was found or clickable.');
+        (safeLogger.warn || safeLogger.warning).call(safeLogger, 'Consent dialog was visible, but no known accept/confirm button was found or clickable.');
         if (attempt < maxAttempts) {
             safeLogger.info(`Retrying consent check after a small delay (attempt ${attempt + 1}).`);
-            await sleep(2000 + nodeJsRandom(500));
-            return await handleYouTubeConsent(page, logger, attempt + 1, maxAttempts);
+            await sleep(2500 + nodeJsRandom(500));
+            return await handleYouTubeConsent(page.parentFrame() || page, logger, attempt + 1, maxAttempts); // Ensure we use main page context for retry
         }
         return false;
     }
@@ -274,18 +305,21 @@ async function handleYouTubeConsent(page, logger, attempt = 1, maxAttempts = 2) 
     return false;
 }
 
-const ANTI_DETECTION_ARGS = [ // Reverted to the minimal set from the user's "latest Apify version"
+const ANTI_DETECTION_ARGS = [
     '--disable-blink-features=AutomationControlled',
     '--no-sandbox',
     '--disable-dev-shm-usage',
     '--disable-gpu',
     '--mute-audio',
     '--ignore-certificate-errors',
+    // '--disable-features=IsolateOrigins,site-per-process,Translate,OptimizationHints,PrivacySandboxAdsAPIsOverride',
+    // '--disable-site-isolation-trials',
+    // '--flag-switches-begin --disable-smooth-scrolling --flag-switches-end'
 ];
 
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
-    safeLogger.info(`Custom anti-detection scripts SKIPPED (v1.9.6 - replicating b0zDz9AEx6U1cx1N2 baseline).`);
+    safeLogger.info(`Custom anti-detection scripts SKIPPED (v1.9.7). Fingerprinting primarily via context & initScript.`);
 }
 
 
@@ -412,29 +446,39 @@ async function setVideoQualityToLowest(page, logger) {
         safeLogger.info('Clicked settings button.');
         await sleep(nodeJsRandom(800, 1300));
 
-        const menuItems = page.locator('.ytp-menuitem');
-        let qualityMenuItem = null;
-        for (let i = 0; i < await menuItems.count(); i++) {
-            const item = menuItems.nth(i);
-            const label = item.locator('.ytp-menuitem-label').first(); // Ensure we target the label within the item
-            const text = await label.textContent({timeout: 500}).catch(() => '');
-            if (text && text.trim().toLowerCase() === 'quality') {
-                qualityMenuItem = item;
-                break;
+        // Use a more reliable way to find the "Quality" menu item, considering localization might affect text.
+        // This looks for a menu item that contains a div with "Quality" (or its translation if YouTube changes structure).
+        const qualityMenuItem = page.locator('.ytp-menuitem:has(.ytp-menuitem-label:text-matches(/^Quality$/i))').first();
+        let qualityMenuClicked = false;
+        if (await qualityMenuItem.isVisible({timeout: 5000}).catch(() => false)) {
+            await qualityMenuItem.click({ timeout: 3000, force: true });
+            safeLogger.info('Clicked "Quality" menu item.');
+            qualityMenuClicked = true;
+        } else {
+            safeLogger.warn('Standard "Quality" menu item not found. Trying alternative selectors...');
+             const altQualitySelectors = [
+                '.ytp-menuitem-label:has-text("Quality")', // Simpler label check
+                '.ytp-menuitem[aria-haspopup="true"]:has(.ytp-menuitem-label)', // Generic item with submenu
+            ];
+            for (const altSelector of altQualitySelectors) {
+                const altQualityItem = page.locator(altSelector).first();
+                 if (await altQualityItem.isVisible({timeout:1000}).catch(()=>false)) {
+                     await altQualityItem.click({timeout:3000, force:true});
+                     safeLogger.info(`Clicked alternative quality menu item: ${altSelector}`);
+                     qualityMenuClicked = true;
+                     break;
+                 }
+            }
+            if (!qualityMenuClicked) {
+                safeLogger.warn('Could not click any known "Quality" menu item.');
+                if (await settingsButton.isVisible({timeout:500}).catch(()=>false)) await settingsButton.click({timeout:1000, force:true}).catch(()=>{});
+                return false;
             }
         }
-
-        if (!qualityMenuItem || !await qualityMenuItem.isVisible({timeout:1000})) {
-            safeLogger.warn('Quality menu item not found or not visible.');
-            if (await settingsButton.isVisible({timeout:500}).catch(()=>false)) await settingsButton.click({timeout:1000, force:true}).catch(()=>{}); // Try to close
-            return false;
-        }
-        await qualityMenuItem.click({ timeout: 3000, force: true });
-        safeLogger.info('Clicked "Quality" menu item.');
         await sleep(nodeJsRandom(800, 1300));
 
         let qualitySet = false;
-        const targetQualities = ["144p", "240p"];
+        const targetQualities = ["144p", "240p"]; // Prioritize these
         const qualityOptionLocators = page.locator('.ytp-quality-menu .ytp-menuitem[role="menuitemradio"]');
 
         for (const targetQualityText of targetQualities) {
@@ -460,24 +504,22 @@ async function setVideoQualityToLowest(page, logger) {
             safeLogger.debug(`Found ${count} quality options in menu.`);
             if (count > 0) { 
                 let lastSelectableItem = null;
-                for (let i = count -1; i >= 0; i--) {
+                for (let i = count -1; i >= 0; i--) { // Iterate backwards
                     const item = qualityOptionLocators.nth(i);
                     const text = await item.textContent({timeout: 200}).catch(() => '');
+                    // Avoid "Auto" if possible, otherwise take the absolute last one
                     if (text && !text.toLowerCase().includes('auto')) {
                         lastSelectableItem = item;
                         break;
                     }
+                    if (i === 0 && !lastSelectableItem) lastSelectableItem = item; // Fallback to first if only Auto or nothing else found
                 }
                 if (lastSelectableItem && await lastSelectableItem.isVisible({timeout: 500})) {
                     await lastSelectableItem.click({ timeout: 2000, force: true });
                     qualitySet = true;
-                    safeLogger.info(`Selected last available non-Auto quality option: ${await lastSelectableItem.textContent()}`);
-                } else if (count > 0 && await qualityOptionLocators.last().isVisible({timeout: 500})) {
-                     await qualityOptionLocators.last().click({ timeout: 2000, force: true });
-                     qualitySet = true;
-                     safeLogger.info(`Selected last option (count: ${count}): ${await qualityOptionLocators.last().textContent()}`);
+                    safeLogger.info(`Selected fallback quality option: ${await lastSelectableItem.textContent()}`);
                 } else {
-                    safeLogger.warn('Not enough quality options to pick the last one, or only "Auto" found/visible.');
+                    safeLogger.warn('Could not select a fallback quality option.');
                 }
             } else {
                  safeLogger.warn('No quality option locators found for fallback.');
@@ -485,14 +527,17 @@ async function setVideoQualityToLowest(page, logger) {
         }
         
         await sleep(nodeJsRandom(500, 1000));
-        if (await settingsButton.isVisible({timeout:500}).catch(() => false)) {
+        // Ensure settings menu is closed if it was opened
+        if (await settingsButton.isVisible({timeout:500}).catch(() => false) && 
+            await page.locator('.ytp-settings-menu').isVisible({timeout:500}).catch(()=>false)) {
              await settingsButton.click({timeout:1000, force:true}).catch(e => safeLogger.debug(`Failed to close settings menu after quality attempt: ${e.message}`));
         }
         return qualitySet;
 
     } catch (e) {
         safeLogger.error(`Error setting video quality: ${e.message.split('\n')[0]}`);
-        if (settingsButton && await settingsButton.isVisible({timeout:500}).catch(() => false)) {
+        if (settingsButton && await settingsButton.isVisible({timeout:500}).catch(() => false) &&
+            await page.locator('.ytp-settings-menu').isVisible({timeout:500}).catch(()=>false) ) {
              await settingsButton.click({timeout:1000, force:true}).catch(err => safeLogger.debug(`Error trying to close settings menu after quality error: ${err.message}`));
         }
         return false;
@@ -534,8 +579,8 @@ async function simulateMouseMovement(page, logger) {
             safeLogger.debug(`Mouse target is within viewport (player not suitable): ${targetX.toFixed(0)},${targetY.toFixed(0)}`);
         }
         
-        targetX = Math.max(0, Math.min(viewport.width - 1, targetX)); // Clamp to viewport
-        targetY = Math.max(0, Math.min(viewport.height - 1, targetY)); // Clamp to viewport
+        targetX = Math.max(0, Math.min(viewport.width - 1, targetX));
+        targetY = Math.max(0, Math.min(viewport.height - 1, targetY));
 
         const steps = nodeJsRandom(5, 15);
         safeLogger.debug(`Simulating mouse move to (${targetX.toFixed(0)}, ${targetY.toFixed(0)}) over ${steps} steps.`);
@@ -603,7 +648,6 @@ class YouTubeViewWorker {
             headless: this.effectiveInput.headless,
             args: [
                 ...ANTI_DETECTION_ARGS,
-                 // Window size will be set by profile, or default if profile doesn't specify one
                 `--window-size=${this.fingerprintProfile.screen.width || 1920},${this.fingerprintProfile.screen.height || 1080}`
             ],
         };
@@ -623,7 +667,7 @@ class YouTubeViewWorker {
         }
 
         this.browser = await playwright.chromium.launch(launchOptions);
-        this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.6).');
+        this.logger.info('Browser launched directly with Playwright (StealthPlugin SKIPPED for v1.9.7).');
 
         this.context = await this.browser.newContext({
             userAgent: this.fingerprintProfile.userAgent,
@@ -653,9 +697,9 @@ class YouTubeViewWorker {
             deviceScaleFactor: (this.fingerprintProfile.screen.width > 1920 || this.fingerprintProfile.screen.height > 1080) ? 1.5 : 1,
             isMobile: false,
             hasTouch: false,
-            extraHTTPHeaders: this.job.referer ? { 'Referer': this.job.referer } : undefined, // Set referer here
+            extraHTTPHeaders: this.job.referer ? { 'Referer': this.job.referer } : undefined,
         });
-        this.logger.info(`Browser context created (SIMPLIFIED for v1.9.6). Profile hints: locale=${this.fingerprintProfile.locale}, timezoneId=${this.fingerprintProfile.timezoneId}, UA=${this.fingerprintProfile.userAgent.substring(0,50)}... Referer: ${this.job.referer || 'None'}`);
+        this.logger.info(`Browser context created. Profile hints: locale=${this.fingerprintProfile.locale}, TZID=${this.fingerprintProfile.timezoneId}, Referer: ${this.job.referer || 'None'}`);
 
         await applyAntiDetectionScripts(this.context, this.logger, this.fingerprintProfile);
 
@@ -722,14 +766,13 @@ class YouTubeViewWorker {
         this.logger.info('Fingerprint override script added via addInitScript.');
 
         this.logger.info(`Navigating to: ${this.job.videoUrl}`);
-        // Use 'domcontentloaded' which is generally faster and less prone to timeouts
         await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 });
         this.logger.info('Navigation (domcontentloaded event) complete.');
         
-        await handleYouTubeConsent(this.page, this.logger, 1, 2);
+        await handleYouTubeConsent(this.page, this.logger, 1, 3); // Increased maxAttempts for consent
         await sleep(nodeJsRandom(2000, 4000));
 
-        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.6).');
+        this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9.7).');
 
         this.logger.info('Waiting for video to load data (up to 90s)...');
         try {
@@ -767,7 +810,7 @@ class YouTubeViewWorker {
         const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-ultra-enhanced-v1.6-retest'); 
         
         if (!initialPlaySuccess) {
-            this.logger.warn('Initial play attempts (Ultra Enhanced ensureVideoPlaying) failed. Attempting playbackRecovery method...');
+            this.logger.warn('Initial play attempts failed. Attempting playbackRecovery method...');
             const recoverySuccess = await this.attemptPlaybackRecovery();
             if (!recoverySuccess) {
                 this.logger.error('All playback attempts failed, including specific recovery. Video may not play.');
@@ -783,7 +826,7 @@ class YouTubeViewWorker {
             }
             this.logger.info('Playback started after specific recovery method.');
         } else {
-            this.logger.info('Video confirmed playing after initial setup (Ultra Enhanced ensureVideoPlaying).');
+            this.logger.info('Video confirmed playing after initial setup.');
         }
 
         await sleep(nodeJsRandom(2000, 4500));
@@ -1061,36 +1104,45 @@ class YouTubeViewWorker {
         return false;
     }
 
-    async attemptPlaybackRecovery() {
-        this.logger.warn('Attempting playback recovery by reloading with autoplay parameter...');
+    async attemptPlaybackRecovery() { // Simplified recovery
+        this.logger.warn('Attempting playback recovery...');
         let success = false;
         try {
-            const currentUrl = this.page.url();
-            const urlObj = new URL(currentUrl);
-            urlObj.searchParams.set('autoplay', '1');
-            urlObj.searchParams.set('mute', '0');
-            
-            this.logger.info(`Navigating to recovery URL: ${urlObj.toString()}`);
-            await this.page.goto(urlObj.toString(), { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.8 }); // Use domcontentloaded for faster recovery nav
+            // Option 1: Simple Refresh
+            this.logger.info('Recovery: Attempting page.reload()');
+            await this.page.reload({ waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
             await sleep(2000 + nodeJsRandom(1000));
-            
-            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsent: '}), 1, 2);
-            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 60000);
+            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentRefresh:'}), 1, 2);
+            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoadRefresh:'}), 60000);
+            if (this.job.platform === 'youtube') {
+                await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'RecoveryQualityRefresh:'}));
+            }
+            success = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-refresh');
+            if (success) {
+                this.logger.info('Playback recovery successful via REFRESH!');
+                return true;
+            }
 
-            const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
-            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay');
+            // Option 2: Navigate to original URL again (if refresh failed)
+            this.logger.info(`Recovery: Refresh failed. Attempting to re-navigate to original job URL: ${this.job.videoUrl}`);
+            await this.page.goto(this.job.videoUrl, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.8 });
+            await sleep(2000 + nodeJsRandom(1000));
+            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentReNav:'}), 1, 2);
+            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoadReNav:'}), 60000);
+            if (this.job.platform === 'youtube') {
+                await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'RecoveryQualityReNav:'}));
+            }
+            success = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'recovery-re-navigate');
             
             if (success) {
-                this.logger.info('Playback recovery successful!');
-                 if (this.job.platform === 'youtube') { // Set quality again after successful recovery
-                    await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'RecoveryQuality: '}));
-                }
+                this.logger.info('Playback recovery successful via RE-NAVIGATION!');
             }
+
         } catch (e) {
             this.logger.error(`Playback recovery method itself failed: ${e.message}`);
         }
         
-        if(!success) this.logger.warn('Playback recovery method (autoplay reload) did not succeed.');
+        if(!success) this.logger.warn('Playback recovery method did not succeed.');
         return success;
     }
 
@@ -1100,7 +1152,6 @@ class YouTubeViewWorker {
         const videoDurationSeconds = this.job.video_info.duration;
         const targetWatchPercentage = this.effectiveInput.watchTimePercentage;
         const targetVideoPlayTimeSeconds = Math.max(10, (targetWatchPercentage / 100) * videoDurationSeconds);
-        const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
 
         this.logger.info(`Watch target: ${targetWatchPercentage}% of ${videoDurationSeconds.toFixed(0)}s = ${targetVideoPlayTimeSeconds.toFixed(0)}s. URL: ${this.job.videoUrl}`);
 
@@ -1109,13 +1160,11 @@ class YouTubeViewWorker {
         const maxOverallWatchDurationMs = (targetVideoPlayTimeSeconds * 1000) + (this.effectiveInput.maxSecondsAds * 1000 * estimatedAdCycles) + 60000;
         this.logger.info(`Calculated maxOverallWatchDurationMs: ${(maxOverallWatchDurationMs/1000).toFixed(0)}s`);
 
-
         const checkIntervalMs = 1000; 
-
         let consecutiveStallChecks = 0;
         const MAX_STALL_CHECKS_BEFORE_RECOVERY = 10;
         let recoveryAttemptsThisJob = 0;
-        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 2; 
+        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 1; // Reduced to 1 primary recovery type
 
         let lastProgressTimestamp = Date.now();
         let lastKnownGoodVideoTime = 0;
@@ -1129,11 +1178,9 @@ class YouTubeViewWorker {
         
         let mouseMoveCooldownMs = Date.now() + nodeJsRandom(15000, 30000);
 
-
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
             const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs);
-
 
             if (this.page.isClosed()) { (this.logger.warn || this.logger.warning).call(this.logger, 'Page closed during watch loop.'); break; }
             if (Date.now() - overallWatchStartTime > maxOverallWatchDurationMs) {
@@ -1244,7 +1291,7 @@ class YouTubeViewWorker {
                  }
 
                 if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds && !isStalledThisCheck) {
-                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
+                    const playAttemptSuccess = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], 'paused-resume');
                     if (!playAttemptSuccess) {
                         this.logger.warn(`ensureVideoPlaying failed to resume playback from paused state. RS: ${videoState.rs}, CT: ${currentActualVideoTime.toFixed(1)}s.`);
                         if (videoState.rs === 0 || videoState.networkState === 3) {
@@ -1285,70 +1332,37 @@ class YouTubeViewWorker {
                     }
 
                     if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
-                        recoveryAttemptsThisJob++;
-                        this.logger.warn(`Max stall checks reached (${consecutiveStallChecks}). Attempting recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
-                        consecutiveStallChecks = 0; 
+                        if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                            recoveryAttemptsThisJob++;
+                            this.logger.warn(`Max stall checks reached (${consecutiveStallChecks}). Attempting PRIMARY recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
+                            consecutiveStallChecks = 0;
+                            const recoveryActionSuccess = await this.attemptPlaybackRecovery(); // This now includes consent & quality set
 
-                        let recoveryActionSuccess = false;
-
-                        if (recoveryAttemptsThisJob === 1) {
-                            this.logger.info('Recovery 1: Attempting specific playback recovery (reload with autoplay).');
-                            recoveryActionSuccess = await this.attemptPlaybackRecovery();
-                            // Consent re-check is now inside attemptPlaybackRecovery if it reloads
-                        } else if (recoveryAttemptsThisJob === 2) {
-                            this.logger.info('Recovery 2: Attempting navigate to youtube.com homepage and back.');
-                            const currentUrlForRecovery = this.job.videoUrl;
-                            const intermediateUrl = 'https://www.youtube.com/';
-                            try {
-                                await this.page.goto(intermediateUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                                await sleep(nodeJsRandom(2500, 5000));
-                                await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentHomePage:'}), 1, 2);
-                                await this.page.goto(currentUrlForRecovery, { waitUntil: 'domcontentloaded', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
-                                await handleYouTubeConsent(this.page, this.logger.child({prefix: 'PostRecovery2Consent:'}), 1, 2); // Consent after navigating back
-                                recoveryActionSuccess = true;
-                            } catch (navError) {
-                                this.logger.error(`Error during navigate-away recovery: ${navError.message}`);
-                                recoveryActionSuccess = false;
-                            }
-                        }
-
-                        if (!recoveryActionSuccess && recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                             this.logger.error('Video stalled and all recovery attempts exhausted/failed. Failing job.');
-                             throw new Error('Video stalled/player error, all recovery attempts exhausted or failed.');
-                        }
-                        
-                        if (recoveryActionSuccess) {
-                            this.logger.info(`Recovery attempt ${recoveryAttemptsThisJob} action completed. Re-validating playback...`);
-                            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'PostRecoveryLoad:'}), 60000).catch(e => {
-                                this.logger.warn(`Video failed to load properly after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
-                                if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Video load failed after final recovery attempt ${recoveryAttemptsThisJob}.`);
-                                recoveryActionSuccess = false;
-                            });
-                            
                             if (recoveryActionSuccess) {
-                                await sleep(nodeJsRandom(1500, 3000));
-                                 if (this.job.platform === 'youtube') { // Set quality again after successful recovery
-                                    await setVideoQualityToLowest(this.page, this.logger.child({prefix: 'PostRecoveryQuality:'}));
-                                }
-                                const playSuccess = await this.ensureVideoPlaying(playButtonSelectors, `post-recovery-${recoveryAttemptsThisJob}`);
+                                this.logger.info(`Primary recovery attempt ${recoveryAttemptsThisJob} action completed. Re-validating playback...`);
+                                const playSuccess = await this.ensureVideoPlaying(['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'], `post-primary-recovery-${recoveryAttemptsThisJob}`);
                                 if (!playSuccess) {
-                                    this.logger.error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback definitively after action.`);
-                                    if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback.`);
+                                    this.logger.error(`Primary recovery attempt ${recoveryAttemptsThisJob} failed to restart playback definitively after action.`);
+                                    if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Primary recovery attempt ${recoveryAttemptsThisJob} failed to restart playback.`);
                                 } else {
                                     lastKnownGoodVideoTime = 0; this.maxTimeReachedThisView = 0;
                                     currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
                                     lastKnownGoodVideoTime = currentActualVideoTime; this.maxTimeReachedThisView = currentActualVideoTime;
                                     lastProgressTimestamp = Date.now(); this.lastLoggedVideoTime = -10;
                                     consecutiveStallChecks = 0; 
-                                    this.logger.info(`Playback seems to have resumed after recovery ${recoveryAttemptsThisJob}. State: CT: ${currentActualVideoTime.toFixed(1)}s`);
+                                    this.logger.info(`Playback seems to have resumed after primary recovery ${recoveryAttemptsThisJob}. State: CT: ${currentActualVideoTime.toFixed(1)}s`);
                                     continue; 
                                 }
+                            } else {
+                                this.logger.warn(`Primary recovery action for attempt ${recoveryAttemptsThisJob} did not result in success.`);
+                                if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                                     this.logger.error('All primary recovery actions attempted but failed to restore playback. Failing job.');
+                                     throw new Error('Video stalled/player error, all primary recovery actions failed.');
+                                }
                             }
-                        } else if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                            this.logger.warn(`Recovery action for attempt ${recoveryAttemptsThisJob} did not result in success or failed to execute, will try next recovery method if available.`);
-                        } else { 
-                             this.logger.error('All recovery actions attempted but failed to restore playback. Failing job.');
-                             throw new Error('Video stalled/player error, all recovery actions failed.');
+                        } else {
+                            this.logger.error('All recovery attempts exhausted. Failing job due to persistent stall.');
+                            throw new Error('Video stalled, all recovery attempts exhausted.');
                         }
                     }
                 } else { 
@@ -1454,7 +1468,7 @@ async function actorMainLogic() {
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.6).');
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9.7).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1468,7 +1482,7 @@ async function actorMainLogic() {
         watchTypes: ['direct'], refererUrls: [''], searchKeywordsForEachVideo: ['funny cat videos, cute kittens'],
         watchTimePercentage: 80, useProxies: true, proxyUrls: [], proxyCountry: 'US', proxyGroups: ['RESIDENTIAL'],
         headless: Actor.isAtHome() ? false : true,
-        concurrency: 1, concurrencyInterval: 5, timeout: 120, // Default timeout from schema
+        concurrency: 1, concurrencyInterval: 5, timeout: 120, // Default from schema for page navigations
         maxSecondsAds: 20,
         skipAdsAfter: ["5", "10"],
         autoSkipAds: true, stopSpawningOnOverload: true,
@@ -1494,7 +1508,7 @@ async function actorMainLogic() {
         effectiveInput.maxSecondsAds = 20;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds, timeout: effectiveInput.timeout, useAV1: effectiveInput.useAV1 });
+    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds, timeout: effectiveInput.timeout });
 
     if (!effectiveInput.videoUrls || effectiveInput.videoUrls.length === 0) {
         actorLog.error('No videoUrls provided in input.');
@@ -1597,12 +1611,12 @@ async function actorMainLogic() {
                     searchLaunchOptions.proxy = { server: `${p.protocol}//${p.hostname}:${p.port}`, username: p.username?decodeURIComponent(p.username):undefined, password: p.password?decodeURIComponent(p.password):undefined };
                 } catch(e){ jobLogger.warn('Failed to parse proxy for search browser, search will be direct.'); }
             }
+            let youtubeSearchUrl = ''; // Define here for wider scope for logging
             try {
                 const searchUserAgent = userAgentStringsForSearch[nodeJsRandom(0, userAgentStringsForSearch.length-1)];
                 
                 const searchFingerprintProfile = getProfileByCountry(effectiveInput.proxyCountry);
                 searchFingerprintProfile.userAgent = searchUserAgent;
-                // Ensure window-size argument is from the profile or a default if not in ANTI_DETECTION_ARGS
                 if (!searchLaunchOptions.args.some(arg => arg.startsWith('--window-size'))) {
                     searchLaunchOptions.args.push(`--window-size=${searchFingerprintProfile.screen.width || 1920},${searchFingerprintProfile.screen.height || 1080}`);
                 }
@@ -1624,18 +1638,17 @@ async function actorMainLogic() {
                     ignoreHTTPSErrors: true,
                 });
 
-                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.6).');
+                jobLogger.info('SearchAntiDetect: Custom scripts SKIPPED (v1.9.7).');
 
                 searchPage = await searchContext.newPage();
 
                 const searchQuery = job.searchKeywords[nodeJsRandom(0, job.searchKeywords.length - 1)];
-                const youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
+                youtubeSearchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`;
                 jobLogger.info(`Navigating to search URL: ${youtubeSearchUrl}`);
-                // Using 'domcontentloaded' for search as well.
                 await searchPage.goto(youtubeSearchUrl, { waitUntil: 'domcontentloaded', timeout: effectiveInput.timeout * 1000 }); 
                 await handleYouTubeConsent(searchPage, jobLogger.child({prefix: 'SearchConsent: '}), 1, 2);
                 
-                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.9.6).');
+                jobLogger.info('enableAutoplayWithInteraction SKIPPED for search stability test (v1.9.7).');
 
                 const videoLinkSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 jobLogger.info(`Looking for video link: ${videoLinkSelector}`);
@@ -1687,7 +1700,7 @@ async function actorMainLogic() {
                 }
 
             } catch (searchError) {
-                 jobLogger.error(`YouTube search navigation to ${youtubeSearchUrl} failed: ${searchError.message}. Call log: ${searchError.stack ? searchError.stack.split('\n').slice(0,3).join(' | ') : 'N/A'}. Falling back to direct URL: ${job.videoUrl}`);
+                 jobLogger.error(`YouTube search navigation to "${youtubeSearchUrl || 'undefined URL'}" failed: ${searchError.message}. Call log: ${searchError.stack ? searchError.stack.split('\n').slice(0,3).join(' | ') : 'N/A'}. Falling back to direct URL: ${job.videoUrl}`);
                  if (Actor.isAtHome()) {
                     try {
                         const ssKey = `SEARCH_FAIL_${job.videoId}_${new Date().toISOString().replace(/[:.]/g, '-')}`;
