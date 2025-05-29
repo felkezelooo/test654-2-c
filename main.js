@@ -1991,12 +1991,6 @@ async function actorMainLogic() {
                  actorLog.debug(`Error during Promise.race (worker slot wait), likely already handled: ${e.message.substring(0,100)}`);
             }
         }
-
-        // REMOVED Actor.isAtCapacity() check as it's not a valid function
-        // if (effectiveInput.stopSpawningOnOverload && Actor.isAtHome() && await Actor.isAtCapacity()) { // THIS LINE WAS REMOVED
-        //     actorLog.warn('Apify platform is at capacity. Stopping further job spawning.');
-        //     break; 
-        // }
         
         const promise = processJob(job).catch(e => {
             // This catch block is for errors that might escape from processJob despite its own try/catch/finally
