@@ -1562,9 +1562,6 @@ class YouTubeViewWorker {
                 this.logger.info(`Target watch time reached. Max Reached: ${this.maxTimeReachedThisView.toFixed(1)}s`); break;
             }
             
-            // Optional: Simulate some minor user interaction periodically if needed
-            // if (loopNumber > 3 && loopNumber % nodeJsRandom(15, 25) === 0 && Math.random() < 0.4) { ... }
-
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime))); // Adjust sleep to maintain interval
         }
         const actualOverallWatchDurationMs = Date.now() - overallWatchStartTime;
@@ -1995,11 +1992,11 @@ async function actorMainLogic() {
             }
         }
 
-        // Stop spawning if system overload is detected (Apify platform specific)
-        if (effectiveInput.stopSpawningOnOverload && Actor.isAtHome() && await Actor.isAtCapacity()) {
-            actorLog.warn('Apify platform is at capacity. Stopping further job spawning.');
-            break; 
-        }
+        // REMOVED Actor.isAtCapacity() check as it's not a valid function
+        // if (effectiveInput.stopSpawningOnOverload && Actor.isAtHome() && await Actor.isAtCapacity()) { // THIS LINE WAS REMOVED
+        //     actorLog.warn('Apify platform is at capacity. Stopping further job spawning.');
+        //     break; 
+        // }
         
         const promise = processJob(job).catch(e => {
             // This catch block is for errors that might escape from processJob despite its own try/catch/finally
