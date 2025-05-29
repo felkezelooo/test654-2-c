@@ -2,7 +2,7 @@ const Apify = require('apify');
 const { Actor } = Apify;
 
 const { chromium } = require('playwright-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth'); // RE-ENABLED
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { v4: uuidv4 } = require('uuid');
 const { URL } = require('url');
 
@@ -235,24 +235,22 @@ const ANTI_DETECTION_ARGS = [
     '--no-service-autorun',
     '--password-store=basic',
     '--use-mock-keychain',
-    // '--force-webrtc-ip-handling-policy=default_public_interface_only', // Stealth should handle this
+    // '--force-webrtc-ip-handling-policy=default_public_interface_only', // Stealth plugin should handle WebRTC
 ];
 
 // Gemini: applyAntiDetectionScripts - Minimal & Stealth-Complementary
 async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfile) {
     const safeLogger = getSafeLogger(logger);
-    const { locale, platform, vendor } = fingerprintProfile; // Removed userAgent as it's not used in this simplified version
+    const { locale, platform, vendor } = fingerprintProfile; 
 
     const scriptToInject = (dynamicLocale, dynamicPlatform, dynamicVendor) => {
-        // 1. Ensure navigator.webdriver is false (StealthPlugin should do this, but as a backup)
         if (navigator.webdriver === true) {
             try { Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true }); } catch(e){}
         }
-        if (typeof navigator.__proto__ !== 'undefined') { // Should exist in browser env
+        if (typeof navigator.__proto__ !== 'undefined') {
              try { delete navigator.__proto__.webdriver; } catch(e) {}
         }
 
-        // 2. Ensure language and platform are consistent with context
         const langBase = dynamicLocale.split('-')[0];
         const languagesArray = dynamicLocale.includes('-') ? [dynamicLocale, langBase] : [dynamicLocale];
         try { Object.defineProperty(navigator, 'languages', { get: () => languagesArray, configurable: true }); } catch(e) {}
@@ -262,19 +260,15 @@ async function applyAntiDetectionScripts(pageOrContext, logger, fingerprintProfi
           try { Object.defineProperty(navigator, 'vendor', { get: () => dynamicVendor, configurable: true }); } catch(e) {}
         }
 
-        // 3. Minimal Permissions Spoof (Notifications primarily)
         if (navigator.permissions && typeof navigator.permissions.query === 'function') {
             const originalPermissionsQuery = navigator.permissions.query;
             navigator.permissions.query = function(parameters) {
                 if (parameters.name === 'notifications') {
                     return Promise.resolve({ state: 'prompt' });
                 }
-                // Let StealthPlugin handle other permissions or use original behavior
                 return originalPermissionsQuery.apply(navigator.permissions, arguments);
             };
         }
-        // DO NOT manually spoof: WebGL, Canvas, complex screen properties, timezone offset, etc.
-        // Let StealthPlugin handle these primarily.
     };
 
     try {
@@ -390,7 +384,7 @@ async function clickIfExists(page, selector, timeout = 3000, logger) { /* ... (u
     }
 }
 
-// enableAutoplayWithInteraction remains commented out for this iteration
+// enableAutoplayWithInteraction remains commented out
 // async function enableAutoplayWithInteraction(page, logger) { ... }
 
 class YouTubeViewWorker {
@@ -524,7 +518,6 @@ class YouTubeViewWorker {
         await handleYouTubeConsent(this.page, this.logger);
         await sleep(nodeJsRandom(2000, 4000));
 
-        // enableAutoplayWithInteraction call remains commented out
         this.logger.info('enableAutoplayWithInteraction SKIPPED for stability test (v1.9).');
 
 
@@ -565,10 +558,9 @@ class YouTubeViewWorker {
         // Using Gemini's SIMPLIFIED ensureVideoPlaying for this test
         const initialPlaySuccess = await this.ensureVideoPlaying(playButtonSelectors, 'initial-setup-simplified-test-v1.9'); 
         
-        // Removed Claude's attemptPlaybackRecovery call here for now, as ensureVideoPlaying is simplified
         if (!initialPlaySuccess) {
-            this.logger.warn('Initial play attempts (SIMPLIFIED ensureVideoPlaying) failed. The watchVideo loop will attempt further resumes if needed.');
-            // If this simplified version fails, it implies a deeper issue that the watchVideo loop's general recovery should handle.
+            this.logger.warn('Initial play attempts (SIMPLIFIED ensureVideoPlaying) failed. The watchVideo loop will attempt further resumes and its own recovery mechanisms.');
+            // attemptPlaybackRecovery is no longer called here directly; watchVideo's stall logic will handle it
         } else {
             this.logger.info('Video confirmed playing after initial setup (SIMPLIFIED ensureVideoPlaying).');
         }
@@ -631,10 +623,9 @@ class YouTubeViewWorker {
         return adWasPlayingThisCheckCycle;
     }
     
-    // Gemini's SIMPLIFIED ensureVideoPlaying for this test (v1.8.1/v1.9)
+    // Using Gemini's SIMPLIFIED ensureVideoPlaying for this test (v1.9)
     async ensureVideoPlaying(playButtonSelectors, attemptType = 'general') {
         const logFn = (msg, level = 'info') => {
-            // Make sure this.logger is available and is a function for each level
             const loggerMethod = this.logger && typeof this.logger[level] === 'function' ? this.logger[level] : console[level] || console.log;
             loggerMethod.call(this.logger || console, `[ensureVideoPlaying-${attemptType}] ${msg}`);
         };
@@ -689,9 +680,41 @@ class YouTubeViewWorker {
         return false;
     }
 
-    // attemptPlaybackRecovery method is removed for this simplified test, as per Gemini's step-by-step approach
+    // Claude's attemptPlaybackRecovery (kept as per Gemini's suggestion to refine stall handling)
+    async attemptPlaybackRecovery() {
+        this.logger.warn('Attempting playback recovery by reloading with autoplay parameter...');
+        let success = false;
+        try {
+            const currentUrl = this.page.url();
+            const urlObj = new URL(currentUrl);
+            urlObj.searchParams.set('autoplay', '1');
+            // urlObj.searchParams.set('t', '0s'); // Optional: Start from beginning
+            
+            this.logger.info(`Navigating to recovery URL: ${urlObj.toString()}`);
+            await this.page.goto(urlObj.toString(), { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await sleep(2000 + nodeJsRandom(500));
+            
+            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsent: '}));
+            // enableAutoplayWithInteraction is still disabled globally for now
+            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction: '}));
+            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'RecoveryLoad: '}), 45000);
 
-    async watchVideo() { /* ... (Unchanged from v1.7, will use the simplified ensureVideoPlaying when called) ... */
+            const playButtonSelectors = ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video'];
+            success = await this.ensureVideoPlaying(playButtonSelectors, 'recovery-reload-autoplay'); // Will use the simplified one
+            
+            if (success) {
+                this.logger.info('Playback recovery successful!');
+            }
+        } catch (e) {
+            this.logger.error(`Playback recovery method itself failed: ${e.message}`);
+        }
+        
+        if(!success) this.logger.warn('Playback recovery method (autoplay reload) did not succeed.');
+        return success;
+    }
+
+
+    async watchVideo() {
         if (!this.page || this.page.isClosed()) throw new Error('Page not initialized/closed for watching.');
 
         const videoDurationSeconds = this.job.video_info.duration;
@@ -706,9 +729,9 @@ class YouTubeViewWorker {
         const checkIntervalMs = 1000; 
 
         let consecutiveStallChecks = 0;
-        const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2;
+        const MAX_STALL_CHECKS_BEFORE_RECOVERY = 2; // Number of general stalls before trying recovery
         let recoveryAttemptsThisJob = 0;
-        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 2;
+        const MAX_RECOVERY_ATTEMPTS_PER_JOB = 2; // attemptPlaybackRecovery, then navigate-away
 
         let lastProgressTimestamp = Date.now();
         let lastKnownGoodVideoTime = 0;
@@ -723,7 +746,7 @@ class YouTubeViewWorker {
 
         while (!this.killed) {
             const loopIterationStartTime = Date.now();
-            const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs);
+            // const loopNumber = Math.floor((Date.now() - overallWatchStartTime) / checkIntervalMs); // Not used in this version of interaction logic
 
             if (this.page.isClosed()) { (this.logger.warn || this.logger.warning).call(this.logger, 'Page closed during watch loop.'); break; }
             if (Date.now() - overallWatchStartTime > maxOverallWatchDurationMs) {
@@ -765,7 +788,7 @@ class YouTubeViewWorker {
                     if (!(await this.page.locator('video.html5-main-video').count() > 0)) {
                         throw new Error('Video element disappeared definitively.');
                     }
-                    isStalledThisCheck = true;
+                    isStalledThisCheck = true; // Treat as stall
                  } else {
                     currentActualVideoTime = videoState.ct || 0;
                     if (currentActualVideoTime > this.maxTimeReachedThisView) {
@@ -782,62 +805,78 @@ class YouTubeViewWorker {
                         }
                     } else if (videoState.p && !videoState.e) {
                         this.logger.info(`Video PAUSED at ${currentActualVideoTime.toFixed(1)}s. RS:${videoState.rs} NS:${videoState.ns}. Will attempt to resume.`);
-                        this.lastLoggedVideoTime = -1;
+                        this.lastLoggedVideoTime = -1; // Force log when it resumes
                     } else {
                          this.logger.debug(`VidState: time=${currentActualVideoTime.toFixed(1)}, maxReached=${this.maxTimeReachedThisView.toFixed(1)}, p=${videoState.p}, e=${videoState.e}, rs=${videoState.rs}, ns=${videoState.ns}, err=${videoState.error?.code}, src=${!!videoState.src}`);
                     }
 
+                    // Error detection from player
                     if (videoState.error && videoState.error.code) {
                         this.logger.error(`Player Error Detected in watch loop: Code ${videoState.error.code}, Msg: ${videoState.error.message}. Triggering recovery.`);
                         isStalledThisCheck = true;
-                        if (videoState.error.code === 2 && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                        if (videoState.error.code === 2 /* MEDIA_ERR_NETWORK */ && recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
                             this.logger.warn("Network error (code 2) in player, will attempt recovery via stall logic.");
-                        } else if (videoState.error.code === 3 || videoState.error.code === 4) {
+                        } else if (videoState.error.code === 3 /* MEDIA_ERR_DECODE */ || videoState.error.code === 4 /* MEDIA_ERR_SRC_NOT_SUPPORTED */) {
                             this.logger.error(`Fatal player error (Decode/Src). Code: ${videoState.error.code}`);
                             throw new Error(`Fatal Video Player Error Code ${videoState.error.code}: ${videoState.error.message}`);
-                        } else {
+                        } else { // Other errors
                             this.logger.error(`Unhandled or non-recoverable player error. Code: ${videoState.error.code}`);
-                            if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB -1) {
+                            if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB -1) { // If this is the last chance or beyond
                                  throw new Error(`Unhandled Video Player Error Code ${videoState.error.code}: ${videoState.error.message} (recovery exhausted)`);
                             }
                         }
                     }
                     
-                    if (videoState.rs === 0 && currentActualVideoTime < 1 && (Date.now() - lastProgressTimestamp) > 10000 && (Date.now() - overallWatchStartTime > 15000)) {
-                        this.logger.warn(`CRITICAL STALL: ReadyState 0, currentTime near 0 for >10s. LastGood: ${lastKnownGoodVideoTime.toFixed(1)}`);
+                    // Critical Stall detection: RS 0 (HAVE_NOTHING)
+                    if (videoState.rs === 0 && (Date.now() - overallWatchStartTime > 15000)) { // Check after 15s from start
+                        this.logger.warn(`CRITICAL STALL: ReadyState 0. LastGoodTime: ${lastKnownGoodVideoTime.toFixed(1)}, CurrentTime: ${currentActualVideoTime.toFixed(1)}`);
                         isStalledThisCheck = true;
+                        consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY; // Force recovery for RS:0
                     }
 
-
+                    // Regular stall detection (no progress) only if not already flagged for critical stall
                     if (!isStalledThisCheck) {
-                        if (!videoState.p && videoState.rs >= 2 && !videoState.e) {
+                        if (!videoState.p && videoState.rs >= 2 && !videoState.e) { // If playing or supposed to be buffering
                             if (Math.abs(currentActualVideoTime - lastKnownGoodVideoTime) < 0.8 && (Date.now() - lastProgressTimestamp) > 10000) {
+                                this.logger.warn(`Normal stall: No progress. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}.`);
                                 isStalledThisCheck = true;
-                            } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) {
+                            } else if (currentActualVideoTime > lastKnownGoodVideoTime + 0.2) { // Progress made
                                 lastKnownGoodVideoTime = currentActualVideoTime;
                                 lastProgressTimestamp = Date.now();
-                                consecutiveStallChecks = 0;
+                                consecutiveStallChecks = 0; // Reset stall count on progress
                             }
-                        } else if (videoState.p && !videoState.e) {
+                        } else if (videoState.p && !videoState.e) { // If paused (not ended), reset general stall timer
                             lastProgressTimestamp = Date.now();
                         }
                     }
+                 } // End of else for videoState available
 
-                    if (!videoState.src && (Date.now() - overallWatchStartTime > 15000)) {
-                        this.logger.warn(`CRITICAL: No video source (currentSrc) after 15s. Triggering recovery.`);
-                        isStalledThisCheck = true;
+                // Logic for if video is paused and needs resuming (moved from outside the try-catch)
+                if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
+                    const playAttemptSuccess = await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
+                    if (!playAttemptSuccess) {
+                        this.logger.warn(`ensureVideoPlaying failed to resume playback from paused state. RS: ${videoState.rs}, CT: ${currentActualVideoTime.toFixed(1)}s.`);
+                        if (videoState.rs === 0 || videoState.networkState === 3) {
+                            this.logger.warn(`Critical stall (RS:0 or NS:3) detected by ensureVideoPlaying failure from paused state. Forcing recovery check.`);
+                            isStalledThisCheck = true;
+                            consecutiveStallChecks = MAX_STALL_CHECKS_BEFORE_RECOVERY;
+                        } else {
+                            isStalledThisCheck = true; // Mark as stalled if ensureVideoPlaying couldn't resume
+                        }
+                    } else { // Play attempt was successful
+                        isStalledThisCheck = false; 
+                        consecutiveStallChecks = 0;
+                        lastProgressTimestamp = Date.now();
+                        this.lastLoggedVideoTime = -1; 
                     }
-                    if (videoState.videoWidth === 0 && videoState.videoHeight === 0 && videoState.rs > 0 && currentActualVideoTime > 2 && (Date.now() - overallWatchStartTime > 15000)) {
-                        this.logger.warn(`CRITICAL: Video dimensions 0x0 despite RS ${videoState.rs} and time > 2s. Triggering recovery.`);
-                        isStalledThisCheck = true;
-                    }
-                 }
+                }
+
 
                 if (isStalledThisCheck) {
-                    consecutiveStallChecks++;
-                    (this.logger.warn || this.logger.warning).call(this.logger, `Playback stalled/error detected. CT: ${currentActualVideoTime.toFixed(1)}, LastGood: ${lastKnownGoodVideoTime.toFixed(1)}. Stalls checks: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}`);
+                    consecutiveStallChecks++; // This increments if isStalledThisCheck was set by any of the above conditions
+                    (this.logger.warn || this.logger.warning).call(this.logger, `Playback stall detected or ensureVideoPlaying failed. Stalls checks: ${consecutiveStallChecks}. RS: ${videoState?.rs}, NS: ${videoState?.ns}, CT: ${currentActualVideoTime.toFixed(1)}`);
                     
-                    if (Actor.isAtHome()) {
+                    if (Actor.isAtHome()) { /* ... screenshot logic ... */
                         try {
                             const stallTime = new Date().toISOString().replace(/[:.]/g, '-');
                             const screenshotKey = `STALL_SCREENSHOT_${this.job.videoId}_${this.id.substring(0,8)}_${stallTime}`;
@@ -848,13 +887,6 @@ class YouTubeViewWorker {
                         } catch (screenshotError) { 
                             this.logger.error(`Failed to take or save stall screenshot: ${screenshotError.message}`); 
                         }
-                        
-                        try {
-                            const browserConsoleMessages = await this.page.evaluate(() => window.capturedConsoleMessages ? window.capturedConsoleMessages.slice(-10) : []);
-                            if (browserConsoleMessages && browserConsoleMessages.length > 0) {
-                                this.logger.warn('Recent browser console messages during stall/error:', browserConsoleMessages);
-                            }
-                        } catch(e) {this.logger.debug("Could not get recent browser console messages via evaluate.");}
                     }
                     
                     const ytErrorLocator = this.page.locator('.ytp-error-content, text=/Something went wrong/i, text=/An error occurred/i, div.ytp-error').first();
@@ -862,70 +894,70 @@ class YouTubeViewWorker {
                         this.logger.warn('YouTube specific error message detected on player. Prioritizing recovery.');
                     }
 
-
                     if (consecutiveStallChecks >= MAX_STALL_CHECKS_BEFORE_RECOVERY) {
                         recoveryAttemptsThisJob++;
                         consecutiveStallChecks = 0;
-                        this.logger.warn(`Stalled. Attempting recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
+                        this.logger.warn(`Max stall checks reached. Attempting recovery ${recoveryAttemptsThisJob}/${MAX_RECOVERY_ATTEMPTS_PER_JOB}...`);
                         
-                        let recoveryActionTaken = false;
+                        let recoveryActionSuccess = false;
 
                         if (recoveryAttemptsThisJob === 1) {
-                            this.logger.info('Recovery 1: Attempting page reload.');
-                            try {
-                                await this.page.reload({ waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
-                                recoveryActionTaken = true;
-                            } catch (reloadError) {
-                                this.logger.error(`Page reload failed: ${reloadError.message}.`);
-                            }
+                            this.logger.info('Recovery 1: Attempting specific playback recovery (reload with autoplay).');
+                            recoveryActionSuccess = await this.attemptPlaybackRecovery();
                         } else if (recoveryAttemptsThisJob === 2) {
-                            this.logger.info('Recovery 2: Attempting navigate to youtube.com and back.');
+                            this.logger.info('Recovery 2: Attempting navigate to youtube.com homepage and back.');
                             const currentUrlForRecovery = this.job.videoUrl;
                             const intermediateUrl = 'https://www.youtube.com/';
                             try {
-                                await this.page.goto(intermediateUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-                                await sleep(nodeJsRandom(1500, 3000));
+                                await this.page.goto(intermediateUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                                await sleep(nodeJsRandom(2500, 5000));
+                                await handleYouTubeConsent(this.page, this.logger.child({prefix: 'RecoveryConsentHomePage:'}));
                                 await this.page.goto(currentUrlForRecovery, { waitUntil: 'load', timeout: this.effectiveInput.timeout * 1000 * 0.7 });
-                                recoveryActionTaken = true;
+                                recoveryActionSuccess = true;
                             } catch (navError) {
                                 this.logger.error(`Error during navigate-away recovery: ${navError.message}`);
-                                throw new Error('Recovery by navigation failed definitively.');
+                                recoveryActionSuccess = false; // Explicitly set
                             }
                         }
 
-                        if (recoveryAttemptsThisJob > MAX_RECOVERY_ATTEMPTS_PER_JOB && !recoveryActionTaken) {
-                             this.logger.error('Video stalled and all recovery attempts exhausted / failed to execute. Failing job.');
+                        if (!recoveryActionSuccess && recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) {
+                             this.logger.error('Video stalled and all recovery attempts exhausted/failed. Failing job.');
                              throw new Error('Video stalled/player error, all recovery attempts exhausted or failed.');
                         }
                         
-                        if (recoveryActionTaken) {
-                            this.logger.info(`Page re-navigated/reloaded. Re-handling consent & playback after recovery attempt ${recoveryAttemptsThisJob}...`);
-                            await handleYouTubeConsent(this.page, this.logger);
-                            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'RecoveryInteraction2: '})); // Still disabled
-                            await waitForVideoToLoad(this.page, this.logger, 30000).catch(e => {
-                                this.logger.warn(`Video failed to load after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
+                        if (recoveryActionSuccess) {
+                            this.logger.info(`Recovery attempt ${recoveryAttemptsThisJob} action completed. Re-validating playback...`);
+                            await handleYouTubeConsent(this.page, this.logger.child({prefix: 'PostRecoveryConsent:'}));
+                            // await enableAutoplayWithInteraction(this.page, this.logger.child({prefix: 'PostRecoveryInteraction:'})); // Still disabled
+                            await waitForVideoToLoad(this.page, this.logger.child({prefix: 'PostRecoveryLoad:'}), 60000).catch(e => {
+                                this.logger.warn(`Video failed to load properly after recovery action ${recoveryAttemptsThisJob}: ${e.message}`);
+                                if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Video load failed after final recovery attempt ${recoveryAttemptsThisJob}.`);
+                                recoveryActionSuccess = false;
                             });
-                            await sleep(nodeJsRandom(1500, 3000));
-
-                            const playSuccess = await this.ensureVideoPlaying(playButtonSelectors, `recovery-${recoveryAttemptsThisJob}`);
-                            if (!playSuccess) {
-                                this.logger.error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback definitively.`);
-                                throw new Error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback.`);
+                            
+                            if (recoveryActionSuccess) {
+                                await sleep(nodeJsRandom(1500, 3000));
+                                const playSuccess = await this.ensureVideoPlaying(playButtonSelectors, `post-recovery-${recoveryAttemptsThisJob}`);
+                                if (!playSuccess) {
+                                    this.logger.error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback definitively after action.`);
+                                    if (recoveryAttemptsThisJob >= MAX_RECOVERY_ATTEMPTS_PER_JOB) throw new Error(`Recovery attempt ${recoveryAttemptsThisJob} failed to restart playback.`);
+                                } else {
+                                    lastKnownGoodVideoTime = 0; this.maxTimeReachedThisView = 0;
+                                    currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
+                                    lastKnownGoodVideoTime = currentActualVideoTime; this.maxTimeReachedThisView = currentActualVideoTime;
+                                    lastProgressTimestamp = Date.now(); this.lastLoggedVideoTime = -1;
+                                    this.logger.info(`Playback seems to have resumed after recovery ${recoveryAttemptsThisJob}. State: CT: ${currentActualVideoTime.toFixed(1)}s`);
+                                    continue; // Restart the watch loop iteration
+                                }
                             }
-                            lastKnownGoodVideoTime = 0; this.maxTimeReachedThisView = 0;
-                            currentActualVideoTime = await this.page.evaluate(() => document.querySelector('video.html5-main-video')?.currentTime || 0).catch(()=>0);
-                            lastKnownGoodVideoTime = currentActualVideoTime; this.maxTimeReachedThisView = currentActualVideoTime;
-                            lastProgressTimestamp = Date.now(); this.lastLoggedVideoTime = -1;
-                            this.logger.info(`Playback seems to have resumed after recovery ${recoveryAttemptsThisJob}. State: CT: ${currentActualVideoTime.toFixed(1)}s`);
-                            continue;
                         } else if (recoveryAttemptsThisJob < MAX_RECOVERY_ATTEMPTS_PER_JOB) {
-                            this.logger.warn(`Recovery action for attempt ${recoveryAttemptsThisJob} did not complete or failed, will try next recovery method if available.`);
-                        } else {
-                            this.logger.error('All recovery actions attempted but failed to restore playback. Failing job.');
-                            throw new Error('Video stalled/player error, all recovery actions failed.');
+                            this.logger.warn(`Recovery action for attempt ${recoveryAttemptsThisJob} did not result in success or failed to execute, will try next recovery method if available.`);
+                        } else { // All recovery attempts failed
+                             this.logger.error('All recovery actions attempted but failed to restore playback. Failing job.');
+                             throw new Error('Video stalled/player error, all recovery actions failed.');
                         }
                     }
-                } else {
+                } else { // Not stalled this check
                     consecutiveStallChecks = 0;
                 }
             } catch (e) {
@@ -933,13 +965,14 @@ class YouTubeViewWorker {
                     (this.logger.warn || this.logger.warning).call(this.logger, `Watch loop error (Target closed/Protocol): ${e.message}`); throw e;
                 }
                  (this.logger.warn || this.logger.warning).call(this.logger, `Video state eval/check error: ${e.message.split('\n')[0]}`);
-                 if (e.message.includes('all recovery attempts exhausted') || e.message.includes('Recovery by navigation failed definitively') || e.message.includes('failed to restart playback') || e.message.includes('Video Player Error Code')) throw e;
+                 if (e.message.includes('all recovery attempts exhausted') || e.message.includes('Recovery by navigation failed definitively') || e.message.includes('failed to restart playback') || e.message.includes('Video Player Error Code') || e.message.includes('Fatal Video Player Error Code')) throw e;
                  await sleep(checkIntervalMs); continue;
             }
             
-            if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
-                await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume'); // Using simplified ensureVideoPlaying
-            }
+            // This check was moved up into the try-catch block after videoState is evaluated
+            // if (videoState && videoState.p && !videoState.e && this.maxTimeReachedThisView < targetVideoPlayTimeSeconds) {
+            //     await this.ensureVideoPlaying(playButtonSelectors, 'paused-resume');
+            // }
             
             if (videoState && videoState.e) { this.logger.info('Video playback naturally ended.'); break; }
             if (this.maxTimeReachedThisView >= targetVideoPlayTimeSeconds) {
@@ -947,62 +980,10 @@ class YouTubeViewWorker {
             }
             
             const interactionRandom = Math.random();
-            if (loopNumber > 2 && loopNumber % nodeJsRandom(3,5) === 0 && interactionRandom < 0.6) {
-                 try {
-                    const videoElement = this.page.locator('video.html5-main-video').first();
-                    if (await videoElement.isVisible({timeout:500})) {
-                        await videoElement.hover({timeout: 1000, force: false}).catch(e => this.logger.debug(`Hover error (non-critical): ${e.message}`));
-                        await sleep(100 + nodeJsRandom(100));
-                        const boundingBox = await videoElement.boundingBox();
-                        if (boundingBox) {
-                             await this.page.mouse.move(
-                                 boundingBox.x + nodeJsRandom(Math.floor(boundingBox.width * 0.2), Math.floor(boundingBox.width * 0.8)),
-                                 boundingBox.y + nodeJsRandom(Math.floor(boundingBox.height * 0.2), Math.floor(boundingBox.height * 0.8)),
-                                 {steps:nodeJsRandom(2,5)}
-                             );
-                        }
-                        this.logger.debug('Simulated mouse hover and move over video.');
-                    }
-                } catch(e) {this.logger.debug(`Minor interaction simulation error (mouse move): ${e.message.split('\n')[0]}. Ignoring.`);}
-            }
-             if (loopNumber > 5 && loopNumber % nodeJsRandom(6,8) === 0 && interactionRandom < 0.4) {
-                try {
-                    const settingsButton = this.page.locator('.ytp-settings-button').first();
-                    if (await settingsButton.isVisible({timeout: 300})) {
-                        await settingsButton.hover({timeout: 300, force: false}).catch(e => this.logger.debug(`Settings hover error: ${e.message}`));
-                        this.logger.debug('Simulated hover on settings button.');
-                        await sleep(100 + nodeJsRandom(100));
-                        const vp = this.page.viewportSize();
-                        if (vp) await this.page.mouse.move(nodeJsRandom(Math.floor(vp.width * 0.1)), nodeJsRandom(Math.floor(vp.height * 0.1)), {steps: 2});
-                    }
-                } catch (e) {this.logger.debug(`Minor settings hover interaction error: ${e.message.split('\n')[0]}`);}
-            }
-             if (loopNumber > 8 && loopNumber % nodeJsRandom(10,12) === 0 && interactionRandom < 0.25) {
-                 try {
-                    const videoElementToClick = this.page.locator('video.html5-main-video').first();
-                     if (await videoElementToClick.isVisible({timeout:300})) {
-                        await videoElementToClick.focus().catch(e => this.logger.debug(`Focus error: ${e.message}`));
-                        await videoElementToClick.click({timeout: 300, position: {x: nodeJsRandom(5,25), y: nodeJsRandom(5,25)}, delay: nodeJsRandom(30,100), force: false }).catch(e => this.logger.debug(`Minor click error: ${e.message}`));
-                        this.logger.debug('Simulated click on video player area (top-leftish).');
-                    }
-                 } catch(e) {this.logger.debug(`Minor video area click error: ${e.message.split('\n')[0]}`); }
-            }
-            if (loopNumber > 10 && loopNumber % nodeJsRandom(12,15) === 0 && videoState && !videoState.p && videoState.rs >=3 && !videoState.e && interactionRandom < 0.15) {
-                try {
-                    this.logger.debug('Attempting spacebar interaction.');
-                    await this.page.locator('body').press('Space');
-                    this.logger.debug('Simulated Spacebar press (pause).');
-                    await sleep(nodeJsRandom(700,1800));
-                    const tempState = await this.page.evaluate(() => { const v = document.querySelector('video.html5-main-video'); return v ? { p: v.paused, e: v.ended } : { p: true, e: true}; }).catch(()=> ({p:true, e:true}));
-                    if (tempState.p && !tempState.e) {
-                        await this.page.locator('body').press('Space');
-                        this.logger.debug('Simulated Spacebar press (play).');
-                        this.lastLoggedVideoTime = -1;
-                    } else {
-                        this.logger.debug('Skipped second spacebar press as video was not suitably paused.');
-                    }
-                } catch(e) {this.logger.debug(`Spacebar press error: ${e.message.split('\n')[0]}`)}
-            }
+            if (loopNumber > 2 && loopNumber % nodeJsRandom(3,5) === 0 && interactionRandom < 0.6) { /* ... (interaction logic) ... */ }
+            if (loopNumber > 5 && loopNumber % nodeJsRandom(6,8) === 0 && interactionRandom < 0.4) { /* ... (interaction logic) ... */ }
+            if (loopNumber > 8 && loopNumber % nodeJsRandom(10,12) === 0 && interactionRandom < 0.25) { /* ... (interaction logic) ... */ }
+            if (loopNumber > 10 && loopNumber % nodeJsRandom(12,15) === 0 && videoState && !videoState.p && videoState.rs >=3 && !videoState.e && interactionRandom < 0.15) { /* ... (interaction logic) ... */ }
 
             await sleep(Math.max(0, checkIntervalMs - (Date.now() - loopIterationStartTime)));
         }
@@ -1029,7 +1010,7 @@ class YouTubeViewWorker {
 }
 
 // --- Main Actor Logic ---
-async function actorMainLogic() { /* ... (unchanged) ... */
+async function actorMainLogic() { /* ... (unchanged, including input parsing and job creation loop) ... */
     console.log('DEBUG: actorMainLogic started.');
     let actorLog;
 
@@ -1074,7 +1055,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         actorLog.warn = actorLog.warning;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9 - Iterative Refinement on v1.8.1).'); // Updated version
+    actorLog.info('ACTOR_MAIN_LOGIC: Starting YouTube View Bot (v1.9 - Gemini Refined Stall/Recovery).');
     const input = await Actor.getInput();
     if (!input) {
         actorLog.error('ACTOR_MAIN_LOGIC: No input provided.');
@@ -1123,7 +1104,7 @@ async function actorMainLogic() { /* ... (unchanged) ... */
         effectiveInput.maxSecondsAds = 20;
     }
 
-    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, customAntiDetect: effectiveInput.customAntiDetect, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds, timeout: effectiveInput.timeout });
+    actorLog.info('ACTOR_MAIN_LOGIC: Effective input (summary):', { videos: effectiveInput.videoUrls.length, proxy: effectiveInput.proxyCountry, headless: effectiveInput.headless, watchPercent: effectiveInput.watchTimePercentage, customAntiDetect: effectiveInput.customAntiDetection, skipAdsAfter: effectiveInput.skipAdsAfter, maxSecondsAds: effectiveInput.maxSecondsAds, timeout: effectiveInput.timeout });
 
     if (!effectiveInput.videoUrls || effectiveInput.videoUrls.length === 0) {
         actorLog.error('No videoUrls provided in input.');
