@@ -2,10 +2,9 @@ import { Actor } from 'apify';
 import { PlaywrightCrawler, playwrightUtils, log } from 'crawlee';
 import { v4 as uuidv4 } from 'uuid';
 
-// --- Improved Anti-Detection & Browser Launching ---
 const LAUNCH_CONTEXT = {
     launchOptions: {
-        headless: true, // This will be overridden by input.
+        headless: true,
         args: [
             '--disable-blink-features=AutomationControlled',
             '--no-first-run',
@@ -45,12 +44,10 @@ function extractVideoId(url) {
         if (url.includes('youtube.com/watch')) {
             return urlObj.searchParams.get('v');
         }
-        // Handle the googleusercontent format from the original bot
         if (url.includes('youtube.com')) {
              return urlObj.searchParams.get('v');
         }
         if (url.includes('rumble.com/')) {
-            // Extracts 'v2j3hyu' from '/v2j3hyu-example-video.html'
             const match = urlObj.pathname.match(/\/([a-zA-Z0-9]+)-/);
             if (match && match[1]) {
                 return match[1];
@@ -63,10 +60,7 @@ function extractVideoId(url) {
     return null;
 }
 
-// --- Main Actor Logic ---
-// Removed the top-level 'await' which was incorrect
 Actor.main(async () => {
-    // Using the logger imported directly from Crawlee
     log.info('Starting YouTube & Rumble View Bot (Final Version).');
 
     const input = await Actor.getInput();
@@ -92,7 +86,6 @@ Actor.main(async () => {
         return;
     }
     
-    // --- Proxy Configuration ---
     if (useProxies) {
         LAUNCH_CONTEXT.proxyConfiguration = await Actor.createProxyConfiguration({
             proxyUrls: proxyUrls.length > 0 ? proxyUrls : undefined,
@@ -107,7 +100,6 @@ Actor.main(async () => {
     LAUNCH_CONTEXT.launchOptions.headless = headless;
 
     const requestQueue = await Actor.openRequestQueue();
-    // --- Create Jobs ---
     for (const [index, url] of videoUrls.entries()) {
         const videoId = extractVideoId(url);
         if (!videoId) {
@@ -143,7 +135,8 @@ Actor.main(async () => {
         minConcurrency: 1,
         maxConcurrency: concurrency,
         navigationTimeoutSecs: timeout,
-        maxConcurrentPagesPerBrowser: 1,
+        // *** THIS IS THE CORRECTED LINE ***
+        maxPagesPerBrowser: 1, // Corrected from maxConcurrentPagesPerBrowser
 
         preNavigationHooks: [
             async ({ page, request }) => {
@@ -211,15 +204,15 @@ Actor.main(async () => {
             const startTime = Date.now();
             
             while (currentWatchTime < targetWatchTimeSec) {
-                if (Date.now() - startTime > (targetWatchTimeSec + 60) * 1000) {
+                if (Date.now() - startTime > (targetWatchTimeSec + 90) * 1000) { // Increased buffer
                     pageLog.warning('Watch time loop exceeded target time + buffer. Exiting loop.');
                     break;
                 }
                 
                 if (jobInput.autoSkipAds) {
-                    const skipButton = page.locator('.ytp-ad-skip-button, .videoAdUiSkipButton').first();
+                    const skipButton = page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button, .videoAdUiSkipButton').first();
                     if (await skipButton.isVisible()) {
-                        await skipButton.click({ trial: true }).catch(()=>{});
+                        await skipButton.click({ trial: true, force: true }).catch(()=>{});
                         pageLog.info('Ad skip button clicked.');
                     }
                 }
@@ -232,7 +225,7 @@ Actor.main(async () => {
                 }
                 if (state.paused) {
                     pageLog.info('Video is paused. Attempting to play...');
-                    await videoElement.click({ trial: true }).catch(()=>{});
+                    await videoElement.click({ trial: true, force: true }).catch(()=>{});
                 }
                 
                 currentWatchTime = state.currentTime;
