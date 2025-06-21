@@ -5,8 +5,9 @@
 FROM apify/actor-node-playwright-chrome:20
 
 # 2. Copy only package manifests to leverage Docker layer caching.
-# This layer is only rebuilt if package.json or package-lock.json changes.
-COPY package.json package-lock.json ./
+# This is the corrected line: `package*.json` copies both package.json
+# and package-lock.json (if it exists) without failing if it doesn't.
+COPY package*.json ./
 
 # 3. Install production dependencies.
 # The --omit=dev flag is now the standard for production builds.
