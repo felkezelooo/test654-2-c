@@ -1,18 +1,9 @@
-// MAIN.JS: Modernized Apify Actor Script
-// Using ES6 modules for better readability and modern standards.
 import { Actor } from 'apify';
 import { playwrightUtils, PlaywrightCrawler } from 'crawlee';
-import playwright from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
 
 // --- Improved Anti-Detection & Browser Launching ---
-// The original repository uses sophisticated anti-detection.
-// Crawlee/Apify SDK's `launchPlaywright` and playwrightUtils already incorporate many
-// anti-detection features. We will rely on them and supplement with key flags.
-// This is more maintainable than a large, static list of arguments.
 const LAUNCH_CONTEXT = {
-    // Let Apify/Crawlee manage the launch options for better integration.
-    // We can still add essential args if needed.
     launchOptions: {
         headless: true, // This will be overridden by input.
         args: [
@@ -21,24 +12,15 @@ const LAUNCH_CONTEXT = {
             '--disable-infobars',
             '--disable-notifications',
             '--disable-popup-blocking',
-            '--mute-audio', // Muting audio is a good practice for viewers.
+            '--mute-audio',
         ],
     },
-    // Using Apify's recommended way to handle proxies.
-    proxyConfiguration: undefined, // Will be set in main logic.
+    proxyConfiguration: undefined,
 };
 
-/**
- * Applies stealth techniques to the browser context.
- * This is a simplified version of the manual anti-detection script,
- * focusing on the most critical parts. Crawlee's default fingerprinting
- * already handles many of these.
- * @param {import('playwright').BrowserContext} context
- */
 async function applyStealth(context) {
     await playwrightUtils.injectFile(context, playwrightUtils.getStealthUtils());
     await context.addInitScript(() => {
-        // Spoof WebGL vendor and renderer
         try {
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function (parameter) {
@@ -49,25 +31,19 @@ async function applyStealth(context) {
         } catch (e) {
             console.debug('Failed WebGL spoof:', e.message);
         }
-        // Spoof timezone
         try {
-            Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; // Simulating UTC-5
+            Date.prototype.getTimezoneOffset = function() { return 5 * 60; };
         } catch (e) {
             console.debug('Failed timezone spoof:', e.message);
         }
     });
 }
 
-/**
- * Extracts a video ID from a YouTube or Rumble URL.
- * @param {string} url
- * @returns {string|null}
- */
 function extractVideoId(url) {
     try {
         const urlObj = new URL(url);
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            return urlObj.searchParams.get('v') || urlObj.pathname.split('/').pop();
+        if (url.includes('youtube.com/watch')) {
+            return urlObj.searchParams.get('v');
         }
         if (url.includes('rumble.com')) {
             const pathParts = urlObj.pathname.split('/');
@@ -80,15 +56,15 @@ function extractVideoId(url) {
     return null;
 }
 
-
 // --- Main Actor Logic ---
-async function main() {
-    await Actor.init();
-    Actor.log.info('Starting YouTube & Rumble View Bot Actor (Improved Version).');
+// The Actor.main() function is the main entry point for the actor.
+// It is wrapped in a main() function to allow for top-level await.
+Actor.main(async () => {
+    Actor.log.info('Starting YouTube & Rumble View Bot (Improved Version).');
 
     const input = await Actor.getInput();
     const {
-        videoUrls = ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+        videoUrls = [],
         watchTypes = ['direct'],
         refererUrls = [],
         searchKeywordsForEachVideo = [],
@@ -104,6 +80,12 @@ async function main() {
         autoSkipAds = true,
     } = input;
 
+    if (videoUrls.length === 0) {
+        Actor.log.warning('No video URLs provided in the input. Exiting.');
+        await Actor.exit();
+        return;
+    }
+    
     // --- Proxy Configuration ---
     if (useProxies) {
         const proxyConfiguration = await Actor.createProxyConfiguration({
@@ -150,19 +132,19 @@ async function main() {
         });
     }
 
-    // Using PlaywrightCrawler for better session and error management.
     const crawler = new PlaywrightCrawler({
         requestQueue,
         launchContext: LAUNCH_CONTEXT,
         minConcurrency: 1,
         maxConcurrency: concurrency,
         navigationTimeoutSecs: timeout,
+        // *** RECOMMENDED SETTINGS FOR RESOURCE MANAGEMENT ***
+        // maxRequestsPerCrawl: 10, // Uncomment for testing to limit the number of videos processed
+        maxConcurrentPagesPerBrowser: 1, // Limits each browser to one page at a time to save memory
 
         preNavigationHooks: [
-            async ({ page, request }, session) => {
+            async ({ page, request }) => {
                 await applyStealth(page.context());
-                
-                // Set referer if needed
                 const { refererUrl } = request.userData;
                 if (refererUrl) {
                     await page.setExtraHTTPHeaders({ 'Referer': refererUrl });
@@ -175,7 +157,6 @@ async function main() {
             const { videoId, platform, watchType, searchKeywords, input: jobInput } = request.userData;
             log.info(`Processing video: ${request.url} (Type: ${watchType})`);
 
-            // --- Navigation Logic ---
             if (watchType === 'search') {
                 const keyword = searchKeywords[Math.floor(Math.random() * searchKeywords.length)];
                 log.info(`Searching for keyword: "${keyword}"`);
@@ -198,12 +179,8 @@ async function main() {
                     session.retire();
                     throw new Error(`Failed to find or click video link from search. Retrying with a new session.`);
                 }
-            } else {
-                // For 'direct' or 'referer', the crawler already navigates to request.url
             }
             
-            // --- Consent & Ad Handling ---
-            // Simplified consent handling.
             try {
                 const consentButton = page.locator('button[aria-label*="Accept all"], button[aria-label*="Agree to all"]');
                 await consentButton.click({ timeout: 7000 });
@@ -212,13 +189,11 @@ async function main() {
                 log.debug('No consent button found or clickable.');
             }
 
-            // --- Watch Logic ---
             const videoElement = page.locator('video.html5-main-video, video.rumble-player-video');
             await videoElement.waitFor({ state: 'visible', timeout: 60000 });
 
-            // Ensure video plays
             if (await videoElement.evaluate(v => v.paused)) {
-                await videoElement.click({ trial: true }).catch(()=>{}); // Try to play
+                await videoElement.click({ trial: true }).catch(()=>{});
             }
             
             const duration = await videoElement.evaluate(v => v.duration);
@@ -233,12 +208,11 @@ async function main() {
             const startTime = Date.now();
             
             while (currentWatchTime < targetWatchTimeSec) {
-                if (Date.now() - startTime > (targetWatchTimeSec + 60) * 1000) { // Add a 60s buffer
+                if (Date.now() - startTime > (targetWatchTimeSec + 60) * 1000) {
                     log.warning('Watch time loop exceeded target time + buffer. Exiting loop.');
                     break;
                 }
                 
-                // Ad handling
                 if (jobInput.autoSkipAds) {
                     const skipButton = page.locator('.ytp-ad-skip-button, .videoAdUiSkipButton').first();
                     if (await skipButton.isVisible()) {
@@ -261,10 +235,10 @@ async function main() {
                 currentWatchTime = state.currentTime;
                 log.debug(`Current watch time: ${currentWatchTime.toFixed(2)}s`);
                 
-                await page.waitForTimeout(5000); // Check every 5 seconds
+                await page.waitForTimeout(5000);
             }
 
-            const finalResult = {
+            await Actor.pushData({
                 videoId,
                 url: request.url,
                 platform,
@@ -273,9 +247,7 @@ async function main() {
                 watchTimeRequestedSec: targetWatchTimeSec,
                 watchTimeActualSec: currentWatchTime,
                 status: 'success',
-            };
-
-            await Actor.pushData(finalResult);
+            });
         },
 
         failedRequestHandler: async ({ request, log }) => {
@@ -290,14 +262,4 @@ async function main() {
     });
 
     await crawler.run();
-    await Actor.exit();
-}
-
-// Check if running on Apify platform and call main
-if (process.env.APIFY_IS_AT_HOME) {
-    main();
-} else {
-    // This allows local testing without the full Apify environment
-    console.log("Not running on Apify platform. To run locally, you would typically use `apify run`.");
-    // You could call main() here for local debugging if desired.
-}
+});
