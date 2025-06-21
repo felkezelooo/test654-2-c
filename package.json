@@ -2,7 +2,7 @@
   "name": "youtube-rumble-apify",
   "version": "1.0.0",
   "type": "module",
-  "description": "YouTube & Rumble View Bot for Apify platform with residential proxies and country selection",
+  "description": "YouTube & Rumble View Bot for Apify platform",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
@@ -20,7 +20,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@crawlee/playwright": "^3.10.0",
+    "apify": "^3.2.1",
     "crawlee": "^3.10.0",
     "playwright": "*",
     "uuid": "^9.0.1"
