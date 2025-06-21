@@ -5,7 +5,7 @@
   "description": "YouTube & Rumble View Bot for Apify platform with residential proxies and country selection",
   "main": "main.js",
   "scripts": {
-    "start": "crawlee run",
+    "start": "node main.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
