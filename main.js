@@ -1,24 +1,8 @@
 import { Actor } from 'apify';
-import { PlaywrightCrawler, playwrightUtils, log, BrowserPool, PlaywrightPlugin } from 'crawlee';
+import { PlaywrightCrawler, playwrightUtils, log } from 'crawlee';
+import playwright from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
 
-// This LAUNCH_CONTEXT is a best-practice for configuring browser launches.
-const LAUNCH_CONTEXT = {
-    launchOptions: {
-        headless: true,
-        args: [
-            '--disable-blink-features=AutomationControlled',
-            '--no-first-run',
-            '--disable-infobars',
-            '--disable-notifications',
-            '--disable-popup-blocking',
-            '--mute-audio',
-        ],
-    },
-    proxyConfiguration: undefined,
-};
-
-// Applies stealth techniques to make the crawler harder to detect.
 async function applyStealth(context) {
     await playwrightUtils.injectFile(context, playwrightUtils.getStealthUtils());
     await context.addInitScript(() => {
@@ -52,10 +36,8 @@ function extractVideoId(url) {
     return null;
 }
 
-// Actor.main() is the main entry point for an Apify Actor.
 await Actor.main(async () => {
     log.info('Starting YouTube & Rumble View Bot...');
-
     const input = await Actor.getInput();
     const {
         videoUrls = [],
@@ -77,18 +59,19 @@ await Actor.main(async () => {
         return;
     }
 
-    if (useProxies) {
-        LAUNCH_CONTEXT.proxyConfiguration = await Actor.createProxyConfiguration({
+    const proxyConfiguration = useProxies
+        ? await Actor.createProxyConfiguration({
             proxyUrls: proxyUrls.length > 0 ? proxyUrls : undefined,
             groups: proxyGroups,
             countryCode: proxyCountry || undefined,
-        });
+        })
+        : undefined;
+
+    if (proxyConfiguration) {
         log.info('Proxy configuration enabled.');
     } else {
         log.info('Running without proxies.');
     }
-
-    LAUNCH_CONTEXT.launchOptions.headless = headless;
 
     const requestQueue = await Actor.openRequestQueue();
     for (const [index, url] of videoUrls.entries()) {
@@ -116,32 +99,27 @@ await Actor.main(async () => {
         });
     }
 
-    // This is the new, robust crawler configuration
     const crawler = new PlaywrightCrawler({
         requestQueue,
-        // The launchContext contains browser launch options and proxy settings
-        launchContext: LAUNCH_CONTEXT,
+        proxyConfiguration,
+        // Instead of launchContext, we define the launcher and its options directly
+        launcher: playwright.chromium,
+        launchOptions: {
+            headless,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--no-first-run',
+                '--disable-infobars',
+                '--disable-notifications',
+                '--disable-popup-blocking',
+                '--mute-audio',
+            ],
+        },
         // Concurrency settings control how many browsers run at once
         minConcurrency: 1,
         maxConcurrency: concurrency,
-        // This is the correct way to control pages per browser for memory management
-        browserPoolOptions: {
-            useFingerprints: true, // Enhanced anti-detection
-            browserPlugins: [
-                new PlaywrightPlugin({
-                    // This is the correct property name and location
-                    maxOpenPagesPerBrowser: 1,
-                }),
-            ],
-        },
-        // This ensures sessions that fail too often are retired
-        sessionPoolOptions: {
-            maxPoolSize: 100,
-            sessionOptions: {
-                maxUsageCount: 5, // Use each proxy/session for a max of 5 requests
-                maxErrorScore: 2, // Retire a session after 2 errors
-            },
-        },
+        // This is a more direct way to manage pages and lifecycle
+        maxPagesPerBrowser: 1,
         // This hook runs before each navigation
         preNavigationHooks: [
             async ({ page, request }) => {
@@ -155,20 +133,36 @@ await Actor.main(async () => {
         ],
         // Main logic for handling each page
         requestHandler: async ({ page, request, log: pageLog, session }) => {
-            const { videoId, platform, watchType, searchKeywords, input: jobInput } = request.userData;
+             const { videoId, platform, watchType, searchKeywords, input: jobInput } = request.userData;
             pageLog.info(`Processing video: ${request.url} (Type: ${watchType})`);
 
             if (watchType === 'search') {
-                // ... search logic remains the same
+                const keyword = searchKeywords[Math.floor(Math.random() * searchKeywords.length)];
+                pageLog.info(`Searching for keyword: "${keyword}"`);
+                const searchUrl = platform === 'youtube'
+                    ? `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}`
+                    : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
+
+                await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout });
+                const videoLinkSelector = platform === 'youtube'
+                    ? `a#video-title[href*="/watch?v=${videoId}"]`
+                    : `a.video-item--a[href*="${videoId}"]`;
+
+                try {
+                    const videoLink = page.locator(videoLinkSelector).first();
+                    await videoLink.waitFor({ state: 'visible', timeout: 45000 });
+                    await videoLink.click();
+                    await page.waitForURL(`**/*${videoId}*`, { timeout: 45000 });
+                    pageLog.info('Successfully navigated from search results.');
+                } catch (e) {
+                    session.retire();
+                    throw new Error(`Failed to find or click video link from search for keyword "${keyword}". Retiring with a new session.`);
+                }
             }
-            
-            // ... video watching logic remains the same
         },
         // Handles requests that fail after all retries
-        failedRequestHandler: async ({ request, log: pageLog, session }) => {
-            pageLog.error(`Request ${request.url} failed. Retiring session.`);
-            // This tells the crawler to discard this proxy/session and get a new one
-            session.retire();
+        failedRequestHandler: async ({ request, log: pageLog }) => {
+            pageLog.error(`Request ${request.url} failed. Check logs for details.`);
             await Actor.pushData({
                 url: request.url,
                 videoId: request.userData.videoId,
