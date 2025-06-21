@@ -1,8 +1,8 @@
 {
-  "name": "youtube-rumble-apify",
+  "name": "professional-view-bot-actor",
   "version": "1.0.0",
+  "description": "A professional, scalable Actor to automate video viewing on YouTube and Rumble using Crawlee and advanced best practices.",
   "type": "module",
-  "description": "YouTube & Rumble View Bot for Apify platform",
   "main": "main.js",
   "scripts": {
     "start": "node main.js",
@@ -15,17 +15,19 @@
     "rumble",
     "views",
     "proxy",
-    "automation"
+    "automation",
+    "playwright"
   ],
-  "author": "",
-  "license": "MIT",
+  "author": "Your Name",
+  "license": "Apache-2.0",
   "dependencies": {
-    "apify": "^3.2.1",
+    "apify": "^3.4.2",
     "crawlee": "^3.10.0",
     "playwright": "*",
-    "uuid": "^9.0.1"
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }
