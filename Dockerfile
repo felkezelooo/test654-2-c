@@ -1,26 +1,15 @@
+# Use the official Apify base image with Playwright for Node.js 18
 FROM apify/actor-node-playwright:18
 
-# Copy only package.json and package-lock.json (if it exists and is specific to this actor)
-COPY package.json ./
-# COPY package-lock.json ./
+# Copy the package.json and package-lock.json files to leverage Docker layer caching
+COPY package*.json ./
 
-# Clean install of dependencies based on package.json
-# Removing existing node_modules and package-lock.json (if any from base image or cache)
-# ensures a fresh install.
-RUN rm -rf node_modules package-lock.json \
- && npm cache clean --force --quiet \
- && npm --quiet set progress=false \
- && echo "Running npm install for production dependencies without optional ones..." \
- && npm install --only=prod --no-optional \
- && echo "Installed NPM packages (production, no optional, depth 0):" \
- && (npm list --depth=0 --omit=dev --omit=optional || true) \
- && echo "Node.js version:" \
- && node --version \
- && echo "NPM version:" \
- && npm --version
+# Install dependencies
+RUN npm install
 
-# Copy the rest of the actor's source code
+# Copy the rest of the actor's source files
 COPY . ./
 
-# Set the command to run when the container starts
-CMD ["node", "main.js"]
+# The base image's default command will run `npm start`, 
+# which we've configured in package.json to be `crawlee run`.
+# No need for an explicit CMD here.
