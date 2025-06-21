@@ -1,29 +1,31 @@
 {
   "name": "youtube-rumble-apify",
   "version": "1.0.0",
+  "type": "module",
   "description": "YouTube & Rumble View Bot for Apify platform with residential proxies and country selection",
   "main": "main.js",
   "scripts": {
-    "start": "node main.js",
+    "start": "crawlee run",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "apify",
+    "crawlee",
     "youtube",
     "rumble",
     "views",
-    "proxy"
+    "proxy",
+    "automation"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "apify": "^3.1.4",
-    "await-to-js": "^3.0.0",
-    "playwright": "^1.40.0", 
-    "proxy-chain": "^2.3.0",
-    "uuid": "^9.0.0"
+    "@crawlee/playwright": "^3.10.0",
+    "crawlee": "^3.10.0",
+    "playwright": "*",
+    "uuid": "^9.0.1"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   }
 }
