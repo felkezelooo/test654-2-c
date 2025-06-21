@@ -1,4 +1,5 @@
-import { Actor } from 'apify';
+// The main change is on this first line: 'apify' is now 'crawlee'
+import { Actor, log } from 'crawlee';
 import { playwrightUtils, PlaywrightCrawler } from 'crawlee';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -51,7 +52,7 @@ function extractVideoId(url) {
             return lastPart.split('.html')[0].split('-')[0] || lastPart;
         }
     } catch (error) {
-        Actor.log.error(`Error extracting video ID from URL ${url}: ${error.message}`);
+        log.error(`Error extracting video ID from URL ${url}: ${error.message}`);
     }
     return null;
 }
@@ -60,7 +61,7 @@ function extractVideoId(url) {
 // The Actor.main() function is the main entry point for the actor.
 // It is wrapped in a main() function to allow for top-level await.
 Actor.main(async () => {
-    Actor.log.info('Starting YouTube & Rumble View Bot (Improved Version).');
+    log.info('Starting YouTube & Rumble View Bot (Crawlee Version).');
 
     const input = await Actor.getInput();
     const {
@@ -80,8 +81,8 @@ Actor.main(async () => {
         autoSkipAds = true,
     } = input;
 
-    if (videoUrls.length === 0) {
-        Actor.log.warning('No video URLs provided in the input. Exiting.');
+    if (!videoUrls || videoUrls.length === 0) {
+        log.warning('No videoUrls provided in the input. Exiting.');
         await Actor.exit();
         return;
     }
@@ -94,9 +95,9 @@ Actor.main(async () => {
             countryCode: proxyCountry || undefined,
         });
         LAUNCH_CONTEXT.proxyConfiguration = proxyConfiguration;
-        Actor.log.info('Proxy configuration enabled.');
+        log.info('Proxy configuration enabled.');
     } else {
-        Actor.log.info('Running without proxies.');
+        log.info('Running without proxies.');
     }
     
     LAUNCH_CONTEXT.launchOptions.headless = headless;
@@ -105,17 +106,17 @@ Actor.main(async () => {
     // --- Create Jobs ---
     for (const [index, url] of videoUrls.entries()) {
         const videoId = extractVideoId(url);
-        const platform = url.includes('youtube') ? 'youtube' : 'rumble';
         if (!videoId) {
-            Actor.log.warning(`Could not extract video ID from URL: ${url}. Skipping.`);
+            log.warning(`Could not extract video ID from URL: ${url}. Skipping.`);
             continue;
         }
-        
+
+        const platform = url.includes('youtube') ? 'youtube' : 'rumble';
         const watchType = watchTypes[index] || 'direct';
         const searchKeywords = (watchType === 'search' && searchKeywordsForEachVideo[index]?.split(',').map(kw => kw.trim()).filter(Boolean)) || [];
         
         if (watchType === 'search' && searchKeywords.length === 0) {
-            Actor.log.warning(`Watch type is 'search' for ${url} but no keywords provided. Defaulting to 'direct'.`);
+            log.warning(`Watch type is 'search' for ${url} but no keywords provided. Defaulting to 'direct'.`);
         }
         
         await requestQueue.addRequest({
@@ -127,7 +128,7 @@ Actor.main(async () => {
                 watchType: (watchType === 'search' && searchKeywords.length > 0) ? 'search' : 'direct',
                 refererUrl: (watchType === 'referer' && refererUrls[index]) || null,
                 searchKeywords,
-                input, // Pass all input settings to the handler
+                input,
             },
         });
     }
@@ -138,9 +139,7 @@ Actor.main(async () => {
         minConcurrency: 1,
         maxConcurrency: concurrency,
         navigationTimeoutSecs: timeout,
-        // *** RECOMMENDED SETTINGS FOR RESOURCE MANAGEMENT ***
-        // maxRequestsPerCrawl: 10, // Uncomment for testing to limit the number of videos processed
-        maxConcurrentPagesPerBrowser: 1, // Limits each browser to one page at a time to save memory
+        maxConcurrentPagesPerBrowser: 1,
 
         preNavigationHooks: [
             async ({ page, request }) => {
@@ -148,25 +147,25 @@ Actor.main(async () => {
                 const { refererUrl } = request.userData;
                 if (refererUrl) {
                     await page.setExtraHTTPHeaders({ 'Referer': refererUrl });
-                    Actor.log.info(`[${request.userData.videoId}] Setting referer: ${refererUrl}`);
+                    log.info(`[${request.userData.videoId}] Setting referer: ${refererUrl}`);
                 }
             },
         ],
 
-        requestHandler: async ({ page, request, log, session }) => {
+        requestHandler: async ({ page, request, log: pageLog, session }) => {
             const { videoId, platform, watchType, searchKeywords, input: jobInput } = request.userData;
-            log.info(`Processing video: ${request.url} (Type: ${watchType})`);
+            pageLog.info(`Processing video: ${request.url} (Type: ${watchType})`);
 
             if (watchType === 'search') {
                 const keyword = searchKeywords[Math.floor(Math.random() * searchKeywords.length)];
-                log.info(`Searching for keyword: "${keyword}"`);
+                pageLog.info(`Searching for keyword: "${keyword}"`);
                 const searchUrl = platform === 'youtube'
                     ? `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}`
                     : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
                 
                 await page.goto(searchUrl, { waitUntil: 'domcontentloaded' });
                 const videoLinkSelector = platform === 'youtube' 
-                    ? `a[href*="/watch?v=${videoId}"]`
+                    ? `a#video-title[href*="/watch?v=${videoId}"]`
                     : `a.video-item--a[href*="${videoId}"]`;
 
                 try {
@@ -174,19 +173,19 @@ Actor.main(async () => {
                     await videoLink.waitFor({ state: 'visible', timeout: 45000 });
                     await videoLink.click();
                     await page.waitForURL(`**/*${videoId}*`, { timeout: 45000 });
-                    log.info('Successfully navigated from search results.');
+                    pageLog.info('Successfully navigated from search results.');
                 } catch (e) {
                     session.retire();
-                    throw new Error(`Failed to find or click video link from search. Retrying with a new session.`);
+                    throw new Error(`Failed to find or click video link from search for keyword "${keyword}". Retrying with a new session.`);
                 }
             }
             
             try {
                 const consentButton = page.locator('button[aria-label*="Accept all"], button[aria-label*="Agree to all"]');
                 await consentButton.click({ timeout: 7000 });
-                log.info('Consent button clicked.');
+                pageLog.info('Consent button clicked.');
             } catch (e) {
-                log.debug('No consent button found or clickable.');
+                pageLog.debug('No consent button found or clickable.');
             }
 
             const videoElement = page.locator('video.html5-main-video, video.rumble-player-video');
@@ -202,14 +201,14 @@ Actor.main(async () => {
             }
             
             const targetWatchTimeSec = duration * (jobInput.watchTimePercentage / 100);
-            log.info(`Video duration: ${duration.toFixed(2)}s. Target watch time: ${targetWatchTimeSec.toFixed(2)}s.`);
+            pageLog.info(`Video duration: ${duration.toFixed(2)}s. Target watch time: ${targetWatchTimeSec.toFixed(2)}s.`);
 
             let currentWatchTime = 0;
             const startTime = Date.now();
             
             while (currentWatchTime < targetWatchTimeSec) {
                 if (Date.now() - startTime > (targetWatchTimeSec + 60) * 1000) {
-                    log.warning('Watch time loop exceeded target time + buffer. Exiting loop.');
+                    pageLog.warning('Watch time loop exceeded target time + buffer. Exiting loop.');
                     break;
                 }
                 
@@ -217,23 +216,23 @@ Actor.main(async () => {
                     const skipButton = page.locator('.ytp-ad-skip-button, .videoAdUiSkipButton').first();
                     if (await skipButton.isVisible()) {
                         await skipButton.click({ trial: true }).catch(()=>{});
-                        log.info('Ad skip button clicked.');
+                        pageLog.info('Ad skip button clicked.');
                     }
                 }
                 
                 const state = await videoElement.evaluate(v => ({ paused: v.paused, ended: v.ended, currentTime: v.currentTime }));
 
                 if (state.ended) {
-                    log.info('Video ended before target watch time was reached.');
+                    pageLog.info('Video ended before target watch time was reached.');
                     break;
                 }
                 if (state.paused) {
-                    log.info('Video is paused. Attempting to play...');
+                    pageLog.info('Video is paused. Attempting to play...');
                     await videoElement.click({ trial: true }).catch(()=>{});
                 }
                 
                 currentWatchTime = state.currentTime;
-                log.debug(`Current watch time: ${currentWatchTime.toFixed(2)}s`);
+                pageLog.debug(`Current watch time: ${currentWatchTime.toFixed(2)}s`);
                 
                 await page.waitForTimeout(5000);
             }
@@ -250,7 +249,7 @@ Actor.main(async () => {
             });
         },
 
-        failedRequestHandler: async ({ request, log }) => {
+        failedRequestHandler: async ({ request }) => {
             log.error(`Request ${request.url} failed. Check logs for details.`);
             await Actor.pushData({
                 url: request.url,
