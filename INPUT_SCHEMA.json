@@ -1,33 +1,49 @@
 {
-    "title": "Professional YouTube & Rumble View Bot",
-    "description": "This Actor automates viewing videos on YouTube and Rumble with advanced controls. Define your viewing tasks below. For detailed guidance and advanced usage, please consult the README.",
+    "title": "YouTube & Rumble View Bot",
+    "description": "Boost views on YouTube and Rumble videos using residential proxies with country selection.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
-        "tasks": {
-            "sectionCaption": "1. Video Tasks",
-            "sectionDescription": "Define the list of videos to watch. Each item in the list is an object representing one viewing task.",
-            "title": "List of Video Tasks",
+        "videoUrls": {
+            "title": "Video URLs",
             "type": "array",
-            "description": "REQUIRED: An array of objects. Each object must contain a 'url' and can optionally include 'watchType', 'refererUrl', and 'searchKeywords' to override global settings for that specific task.",
-            "editor": "json",
+            "description": "REQUIRED: List of YouTube or Rumble video URLs to view. Each URL will be processed as a separate job.",
+            "editor": "stringList",
             "prefill": [
-                {
-                    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                    "watchType": "direct"
-                },
-                {
-                    "url": "https://rumble.com/v2j3hyu-example-video.html",
-                    "watchType": "search",
-                    "searchKeywords": "funny example video"
-                }
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+            ]
+        },
+        "watchTypes": {
+            "title": "Watch Types (Optional)",
+            "type": "array",
+            "description": "OPTIONAL: How to reach each corresponding video. If this list is shorter than the Video URLs list, the remaining videos will use 'direct'. Options: direct, referer, search.",
+            "editor": "stringList",
+            "default": [
+                "direct"
+            ]
+        },
+        "refererUrls": {
+            "title": "Referer URLs (for 'referer' type)",
+            "type": "array",
+            "description": "OPTIONAL: Corresponding Referer URL if 'Watch Type' is 'referer'. Ignored otherwise. Ensure this list aligns with your Video URLs.",
+            "editor": "stringList",
+            "default": [
+                "https://www.google.com/"
+            ]
+        },
+        "searchKeywordsForEachVideo": {
+            "title": "Search Keywords (for 'search' type)",
+            "type": "array",
+            "description": "OPTIONAL: For each video where 'Watch Type' is 'search', provide a corresponding string of comma-separated keywords. Example: \"keyword1, keyword2\"",
+            "editor": "stringList",
+            "default": [
+                "funny cat videos, cute kittens"
             ]
         },
         "watchTimePercentage": {
-            "sectionCaption": "2. Viewing Behavior",
             "title": "Watch Time Percentage",
             "type": "integer",
-            "description": "The percentage of the video's total duration to watch. This is a global setting for all tasks.",
+            "description": "The percentage of the video's total duration to watch.",
             "minimum": 1,
             "maximum": 100,
             "default": 80
@@ -41,7 +57,7 @@
         "skipAdsAfter": {
             "title": "Wait Before Skipping Ad (seconds range)",
             "type": "array",
-            "description": "A random time to wait before trying to skip an ad, even if the button is visible. Provide one value for a fixed wait, or two values for a random range (e.g., [5, 10]).",
+            "description": "A random time to wait before trying to skip an ad. Provide one value for a fixed wait, or two for a random range.",
             "editor": "stringList",
             "default": [
                 "5",
@@ -51,22 +67,21 @@
         "maxSecondsAds": {
             "title": "Maximum Ad Watch Time (seconds)",
             "type": "integer",
-            "description": "The absolute maximum time to spend in the ad-handling logic before proceeding, even if an ad is unskippable.",
+            "description": "The absolute maximum time to spend in the ad-handling logic before proceeding.",
             "minimum": 5,
             "maximum": 180,
             "default": 60
         },
         "useProxies": {
-            "sectionCaption": "3. Network & Concurrency",
             "title": "Use Proxies",
             "type": "boolean",
-            "description": "Enable to use proxies for all connections. It is highly recommended to keep this enabled to avoid being blocked.",
+            "description": "Enable to use proxies for all connections. Highly recommended.",
             "default": true
         },
         "proxyCountry": {
             "title": "Apify Proxy Country",
             "type": "string",
-            "description": "Select a specific country for Apify's residential proxies. Leave empty to use any available country.",
+            "description": "Select a specific country for Apify's residential proxies.",
             "editor": "select",
             "enum": [
                 "",
@@ -106,7 +121,7 @@
         "proxyGroups": {
             "title": "Apify Proxy Groups",
             "type": "array",
-            "description": "Specify Apify Proxy groups to use (e.g., RESIDENTIAL, DATACENTER).",
+            "description": "Specify Apify Proxy groups to use.",
             "editor": "stringList",
             "default": [
                 "RESIDENTIAL"
@@ -115,22 +130,21 @@
         "customProxyUrls": {
             "title": "Custom Proxy URLs (optional)",
             "type": "array",
-            "description": "Provide a list of your own proxy URLs to use instead of Apify Proxy. The format should be http://user:password@host:port.",
+            "description": "Provide a list of your own proxy URLs to use instead of Apify Proxy.",
             "editor": "stringList"
         },
         "concurrency": {
             "title": "Maximum Concurrency",
             "type": "integer",
-            "description": "The maximum number of browser instances to run in parallel. Higher values require more memory.",
+            "description": "The maximum number of browser instances to run in parallel.",
             "minimum": 1,
             "maximum": 100,
             "default": 5
         },
         "headless": {
-            "sectionCaption": "4. Advanced Settings",
             "title": "Run in Headless Mode",
             "type": "boolean",
-            "description": "Run the browser in headless mode (no visible UI). For debugging, you can set this to false to see the browser.",
+            "description": "Run the browser without a visible UI. Set to false for debugging.",
             "default": true
         },
         "timeout": {
@@ -143,6 +157,6 @@
         }
     },
     "required": [
-        "tasks"
+        "videoUrls"
     ]
 }
