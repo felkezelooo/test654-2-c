@@ -161,7 +161,6 @@ async function getStableVideoDuration(page, logInstance) {
     throw new Error('Could not determine a valid video duration after multiple attempts.');
 }
 
-// ** NEW "HUMAN" INTERACTION SIMULATOR **
 async function simulateHumanInteraction(page, logInstance) {
     logInstance.info('Simulating human-like interaction to keep session active...');
     const videoPlayerLocator = page.locator('#movie_player');
@@ -189,7 +188,6 @@ async function simulateHumanInteraction(page, logInstance) {
         },
     ];
 
-    // Pick a random action to perform
     const randomAction = actions[Math.floor(Math.random() * actions.length)];
     try {
         await randomAction();
@@ -234,12 +232,7 @@ const crawler = new PlaywrightCrawler({
     requestHandlerTimeoutSecs: 450,
     navigationTimeoutSecs: input.timeout,
     maxRequestRetries: 3,
-    // ** UPDATED HOOK TO BE LESS DETECTABLE **
-    preNavigationHooks: [async ({ page }) => {
-        // Blocking event logging can be a fingerprinting vector. Let's only block core ad domains.
-        const blockedDomains = ['googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'googletagservices.com', 'google-analytics.com'];
-        await page.route('**/*', (route) => (blockedDomains.some(domain => route.request().url().includes(domain)) ? route.abort() : route.continue()).catch(() => {}));
-    }],
+    // ** REMOVED preNavigationHooks TO STOP ALL URL BLOCKING **
     requestHandler: async ({ request, page, log: pageLog, session }) => {
         const { url, userData } = request;
         const result = {
@@ -277,8 +270,7 @@ const crawler = new PlaywrightCrawler({
             result.watchTimeRequestedSec = targetWatchTimeSec;
             pageLog.info(`Target watch time: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s total.`);
             const watchStartTime = Date.now();
-            // ** UPDATED WATCH LOOP WITH BETTER HUMAN SIMULATION **
-            let nextInteractionTime = 15 + (Math.random() * 20); // First interaction in 15-35s
+            let nextInteractionTime = 15 + (Math.random() * 20);
             while (true) {
                 const elapsedTime = (Date.now() - watchStartTime) / 1000;
                 const videoState = await page.locator('video').first().evaluate(v => ({
@@ -295,7 +287,7 @@ const crawler = new PlaywrightCrawler({
                 if (videoState.paused) await ensureVideoPlaying(page, pageLog);
                 if (elapsedTime >= nextInteractionTime) {
                     await simulateHumanInteraction(page, pageLog);
-                    nextInteractionTime = elapsedTime + (25 + (Math.random() * 25)); // Next interaction in 25-50s
+                    nextInteractionTime = elapsedTime + (25 + (Math.random() * 25));
                 }
                 await sleep(5000);
             }
