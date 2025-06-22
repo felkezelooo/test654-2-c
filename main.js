@@ -43,7 +43,9 @@ async function handleConsent(page, logInstance) {
 }
 
 async function handleAds(page, platform, input, logInstance) {
-    if (platform !== 'youtube') return;
+    if (platform !== 'youtube') {
+        return;
+    }
 
     logInstance.info('Starting aggressive ad handling logic.');
     const adContainerLocator = page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info');
@@ -51,14 +53,16 @@ async function handleAds(page, platform, input, logInstance) {
     const skipButtonLocator = page.getByRole('button', { name: /skip ad/i });
 
     const adWatchStartTime = Date.now();
-    const maxAdWatchTimeMs = (input.maxSecondsAds || 45) * 1000;
+    const maxAdWatchTimeMs = (input.maxSecondsAds || 30) * 1000;
 
     while (Date.now() - adWatchStartTime < maxAdWatchTimeMs) {
         if ((await adContainerLocator.count()) === 0) {
             logInstance.info('Ad container no longer visible. Concluding ad handler.');
             return;
         }
+
         logInstance.info('Ad is visible. Attempting aggressive player state manipulation.');
+
         try {
             await adVideoLocator.evaluate((video) => {
                 if (video && video.duration > 0 && !isNaN(video.duration)) {
@@ -67,66 +71,47 @@ async function handleAds(page, platform, input, logInstance) {
                     video.currentTime = video.duration;
                 }
             });
+            await sleep(500); // Give a moment for the state to apply
         } catch (e) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
         }
+
         try {
             await skipButtonLocator.click({ timeout: 1000 });
             logInstance.info('Successfully clicked the skip ad button post-manipulation.');
             await sleep(1500);
-            continue;
+            return; // Exit after successful click
         } catch (error) {
             logInstance.debug('Skip button was not immediately clickable.');
         }
+
         await sleep(1000);
     }
-    logInstance.warning(`Ad handling logic timed out after ${maxAdWatchTimeMs / 1000} seconds.`);
+    logInstance.warning(`Ad handling logic timed out.`);
 }
 
-// *** THE DEFINITIVE `ensureVideoPlaying` FUNCTION ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video').first();
 
-    // Check if it's already playing before we do anything.
-    if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
-        logInstance.info('Video is already playing.');
-        return;
-    }
-
-    // Try multiple strategies to start playback
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        logInstance.info(`Playback starting attempt #${attempt}...`);
-
-        // Strategy 1: The "human-like" keyboard press
-        logInstance.info('Attempting to play with keyboard press...');
-        try {
-            // Focus the main player area before sending the key
-            await page.locator('#movie_player').click({ timeout: 2000 });
-            await page.keyboard.press('k'); // 'k' is the play/pause shortcut
-            await sleep(2000); // Wait for the player to react
-            if (!await videoLocator.evaluate((v) => v.paused)) {
-                logInstance.info('SUCCESS: Video started playing after keyboard press!');
-                return;
-            }
-        } catch (e) {
-            logInstance.warning(`Keyboard press strategy failed: ${e.message}`);
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        const isPaused = await videoLocator.evaluate((v) => v.paused).catch(() => true);
+        if (!isPaused) {
+            logInstance.info(`Video is confirmed to be playing on attempt ${attempt}.`);
+            return;
         }
 
-        // Strategy 2: The UI button click (if keyboard fails)
-        logInstance.info('Attempting to play by clicking the large play button...');
-        const mainPlayButton = page.locator('#movie_player .ytp-large-play-button');
+        logInstance.warning(`Video is paused on attempt ${attempt}.`);
+
         try {
-            if (await mainPlayButton.isVisible({ timeout: 1000 })) {
-                await mainPlayButton.click();
-                await sleep(2000);
-                if (!await videoLocator.evaluate((v) => v.paused)) {
-                    logInstance.info('SUCCESS: Video started playing after clicking large play button!');
-                    return;
-                }
-            }
+            // More aggressive click that waits for the element to be ready
+            await page.locator('#movie_player').click({ timeout: 3000 });
+            logInstance.info('Clicked movie player to give focus.');
+            await page.keyboard.press('k');
+            logInstance.info("Sent 'k' keyboard press.");
+            await sleep(2000); // Wait for reaction
         } catch (e) {
-            logInstance.warning(`Large play button click failed: ${e.message}`);
+            logInstance.warning(`Keyboard press strategy failed: ${e.message}`);
         }
     }
 
@@ -140,7 +125,8 @@ async function getStableVideoDuration(page, logInstance) {
     let lastDuration = 0;
     for (let i = 0; i < 15; i++) {
         const duration = await videoLocator.evaluate(v => v.duration).catch(() => 0);
-        if (duration > 90 && duration === lastDuration) {
+        // A duration > 60s is unlikely to be an ad.
+        if (duration > 60 && Math.abs(duration - lastDuration) < 1) {
             logInstance.info(`Found stable duration: ${duration.toFixed(2)}s`);
             return duration;
         }
@@ -208,7 +194,7 @@ const crawler = new PlaywrightCrawler({
    },
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
-   requestHandlerTimeoutSecs: 300,
+   requestHandlerTimeoutSecs: 450, // Increased timeout for longer videos
    navigationTimeoutSecs: input.timeout,
    maxRequestRetries: 3,
     preNavigationHooks: [
@@ -298,12 +284,10 @@ const crawler = new PlaywrightCrawler({
                     throw new Error('Watch loop timed out.');
                 }
                 if (videoState.paused) {
-                    // If video gets paused mid-watch, try to resume it
                     await ensureVideoPlaying(page, pageLog);
                 }
                 
-                // Simulate mouse movement every 25-30 seconds to appear active
-                if (elapsedTime - lastInteractionTime > 25) {
+                if (elapsedTime - lastInteractionTime > 30) {
                     pageLog.info('Simulating human-like mouse movement to prevent idle timeout...');
                     await page.mouse.move(Math.random() * 500 + 100, Math.random() * 300 + 100, { steps: 20 });
                     lastInteractionTime = elapsedTime;
