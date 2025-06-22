@@ -1,9 +1,12 @@
 import { Actor } from 'apify';
 import { PlaywrightCrawler, sleep, log } from 'crawlee';
-import { chromium } from 'playwright-extra';
-import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+// **MODIFICATION**: Reverted to the standard playwright package
+import { chromium } from 'playwright';
 
-// --- Helper Functions ---
+// **REMOVED**: The stealth plugin is no longer used.
+// import stealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+// --- Helper Functions (No changes in this section) ---
 function extractVideoId(url, logInstance) {
     try {
         const urlObj = new URL(url);
@@ -12,7 +15,7 @@ function extractVideoId(url, logInstance) {
         }
         if (url.includes('rumble.com')) {
             const pathParts = urlObj.pathname.split('/');
-            const lastPart = pathParts.pop() || pathParts.pop(); // Handle trailing slash
+            const lastPart = pathParts.pop() || pathParts.pop();
             return lastPart.split('-')[0];
         }
         logInstance.warning('Could not determine platform from URL.', { url });
@@ -111,7 +114,6 @@ async function getStableVideoDuration(page, logInstance) {
     throw new Error('Could not determine a valid video duration after multiple attempts.');
 }
 
-// ** NEW, SIMPLIFIED PLAYBACK FUNCTION **
 async function startPlayback(page, logInstance) {
     logInstance.info('Attempting to start video playback...');
     const videoLocator = page.locator('video.html5-main-video').first();
@@ -121,7 +123,6 @@ async function startPlayback(page, logInstance) {
         throw new Error('Player error was present before playback could even start.');
     }
 
-    // Unmute and set a low, randomized volume to appear more human.
     await videoLocator.evaluate(video => {
         video.muted = false;
         video.volume = 0.05 + Math.random() * 0.1;
@@ -132,7 +133,6 @@ async function startPlayback(page, logInstance) {
         return;
     }
 
-    // Try to play
     await page.keyboard.press('k').catch(() => {});
     await sleep(500);
     if (await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
@@ -149,7 +149,10 @@ async function startPlayback(page, logInstance) {
 
 // --- Actor Main Execution ---
 await Actor.init();
-chromium.use(stealthPlugin());
+
+// **MODIFICATION**: Removed the stealth plugin usage.
+// chromium.use(stealthPlugin()); 
+
 const input = await Actor.getInput();
 if (!input || !input.videoUrls || input.videoUrls.length === 0) {
     throw new Error('Invalid input: The "videoUrls" array is required and cannot be empty.');
@@ -217,16 +220,14 @@ const crawler = new PlaywrightCrawler({
             const targetWatchTimeSec = duration * (userData.watchTimePercentage / 100);
             result.watchTimeRequestedSec = targetWatchTimeSec;
             pageLog.info(`Now watching for ${targetWatchTimeSec.toFixed(2)} seconds...`);
-            
-            // ** NEW "FIRE AND FORGET" WATCH STRATEGY **
+
             await sleep(targetWatchTimeSec * 1000);
-            
+
             pageLog.info('Finished waiting for the specified duration.');
 
             const finalVideoTime = await page.locator('video.html5-main-video').first().evaluate(v => v.currentTime).catch(() => 0);
             result.watchTimeActualSec = finalVideoTime;
 
-            // Final check for errors after the watch period.
             const playerErrorLocator = page.locator('.ytp-error');
             if (await playerErrorLocator.isVisible()) {
                 throw new Error('YouTube player error detected after the watch period.');
