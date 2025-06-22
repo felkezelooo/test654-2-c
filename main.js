@@ -27,10 +27,10 @@ async function clickIfExists(page, locator, logInstance, timeout = 3000) {
     try {
         await locator.waitFor({ state: 'visible', timeout });
         await locator.click({ timeout: timeout / 2 });
-        logInstance.info(`Successfully clicked element.`);
+        logInstance.info(`Successfully clicked element: ${locator}`);
         return true;
     } catch (e) {
-        logInstance.debug(`Element not found or not clickable within timeout.`, { error: e.message.split('\n')[0] });
+        logInstance.debug(`Element not found or not clickable within timeout: ${locator}`, { error: e.message.split('\n')[0] });
         return false;
     }
 }
@@ -51,37 +51,41 @@ async function handleConsent(page, logInstance) {
     logInstance.info('No consent dialogs found or handled.');
 }
 
+// *** NEW, MORE ROBUST `handleAds` FUNCTION ***
 async function handleAds(page, platform, input, logInstance) {
     logInstance.info('Starting ad handling logic.');
-    const adCheckIntervalMs = 2500;
-    const maxAdWatchTimeMs = (input.maxSecondsAds || 60) * 1000;
+    const maxAdWatchTimeMs = (input.maxSecondsAds || 90) * 1000;
     const adLoopStartTime = Date.now();
 
+    // This loop will run for a maximum of `maxAdWatchTimeMs`
     while (Date.now() - adLoopStartTime < maxAdWatchTimeMs) {
-        const adSelectors = {
-            youtube: page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info'),
-            rumble: page.locator('.video-ad-indicator, .ima-ad-container :not([style*="display: none"])'),
-        };
-        const skipSelectors = {
-            youtube: page.getByRole('button', { name: /skip ad/i }),
-            rumble: page.getByRole('button', { name: /skip ad/i }),
-        };
+        const adShowingLocator = page.locator('.ad-showing, .video-ads.ytp-ad-module');
+        const isAdVisible = await adShowingLocator.isVisible();
 
-        if (!(await adSelectors[platform].count() > 0)) {
-            logInstance.info('No ad seems to be playing. Exiting ad handler.');
+        // If no ad container is visible, the ad is over.
+        if (!isAdVisible) {
+            logInstance.info('Ad container no longer visible. Assuming ad is finished.');
             return;
         }
-        logInstance.info(`Ad detected on ${platform}.`);
 
-        if (input.autoSkipAds && await clickIfExists(page, skipSelectors[platform], logInstance, 1000)) {
-            logInstance.info('Ad skipped due to `autoSkipAds` setting.');
-            await sleep(2000);
-            continue;
+        logInstance.info('Ad is currently visible.');
+
+        // Try to click the skip button if it appears
+        const skipButtonLocator = page.locator('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
+        if (await skipButtonLocator.isVisible()) {
+            logInstance.info('Skip button is visible. Attempting to click.');
+            await clickIfExists(page, skipButtonLocator, logInstance, 1000);
+            await sleep(2000); // Give time for the ad to disappear
+            continue; // Go to the top of the loop to re-evaluate
         }
-        await sleep(adCheckIntervalMs);
+
+        // Wait for a short interval before checking again
+        await sleep(2500);
     }
-    logInstance.warning('Ad handling timed out.', { maxAdWatchTimeMs });
+
+    logInstance.warning('Ad handling timed out. Proceeding with video playback attempt.');
 }
+
 
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
@@ -152,6 +156,8 @@ const crawler = new PlaywrightCrawler({
    },
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
+   // Increased timeout to give ad handler more time
+   requestHandlerTimeoutSecs: 180,
    navigationTimeoutSecs: input.timeout,
    maxRequestRetries: 3,
 
@@ -162,7 +168,6 @@ const crawler = new PlaywrightCrawler({
 
         const result = {
             url, videoId, platform,
-            // *** THIS IS THE CORRECTED LINE ***
             proxyUsed: session?.proxyUrl,
             status: 'processing',
             startTime: new Date().toISOString(), endTime: null,
