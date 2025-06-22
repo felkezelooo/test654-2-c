@@ -12,7 +12,7 @@ function extractVideoId(url, logInstance) {
         }
         if (url.includes('rumble.com')) {
             const pathParts = urlObj.pathname.split('/');
-            const lastPart = pathParts.pop() || pathParts.pop(); // Handle trailing slash
+            const lastPart = pathParts.pop() || pathParts.pop();
             return lastPart.split('-')[0];
         }
         logInstance.warning('Could not determine platform from URL.', { url });
@@ -143,9 +143,6 @@ const proxyConfiguration = await Actor.createProxyConfiguration({
 const crawler = new PlaywrightCrawler({
    requestQueue,
    proxyConfiguration,
-    // *** THIS IS THE CORRECTED CONFIGURATION ***
-    // We use `launchContext` to specify the stealth launcher, as the error message suggested.
-    // The conflicting `browserPoolOptions` has been removed.
    launchContext: {
        launcher: chromium,
        useIncognitoPages: true,
@@ -153,7 +150,6 @@ const crawler = new PlaywrightCrawler({
            headless: input.headless,
        },
    },
-   // *** END OF CORRECTION ***
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
    navigationTimeoutSecs: input.timeout,
@@ -166,7 +162,8 @@ const crawler = new PlaywrightCrawler({
 
         const result = {
             url, videoId, platform,
-            proxyUsed: session?.getProxyUrl(),
+            // *** THIS IS THE CORRECTED LINE ***
+            proxyUsed: session?.proxyUrl,
             status: 'processing',
             startTime: new Date().toISOString(), endTime: null,
             durationFoundSec: null, watchTimeRequestedSec: 0, watchTimeActualSec: 0,
