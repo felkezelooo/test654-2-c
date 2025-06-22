@@ -23,14 +23,14 @@ function extractVideoId(url, logInstance) {
     }
 }
 
-async function clickIfExists(page, locator, logInstance, timeout = 3000) {
+async function clickIfExists(page, locator, logInstance, timeout = 1000) {
     try {
         await locator.waitFor({ state: 'visible', timeout });
-        await locator.click({ timeout: timeout / 2 });
-        logInstance.info(`Successfully clicked element: ${locator}`);
+        await locator.click({ timeout });
+        logInstance.info('Successfully clicked skip button.');
         return true;
     } catch (e) {
-        logInstance.debug(`Element not found or not clickable within timeout: ${locator}`, { error: e.message.split('\n')[0] });
+        logInstance.debug(`Skip button not found or clickable within timeout.`, { error: e.message.split('\n')[0] });
         return false;
     }
 }
@@ -51,35 +51,48 @@ async function handleConsent(page, logInstance) {
     logInstance.info('No consent dialogs found or handled.');
 }
 
-// *** Final corrected `handleAds` function ***
+// *** FINAL, PRODUCTION-GRADE `handleAds` FUNCTION ***
 async function handleAds(page, platform, input, logInstance) {
+    if (platform !== 'youtube') return; // This logic is specific to YouTube ads
+
     logInstance.info('Starting ad handling logic.');
-    const maxAdWatchTimeMs = (input.maxSecondsAds || 90) * 1000;
+    const maxAdWatchTimeMs = (input.maxSecondsAds || 60) * 1000;
     const adLoopStartTime = Date.now();
 
     while (Date.now() - adLoopStartTime < maxAdWatchTimeMs) {
         const adShowingLocator = page.locator('.ad-showing, .video-ads.ytp-ad-module');
-        
-        // ** THIS IS THE CORRECTED LINE **
-        // Instead of .isVisible(), we use .count() to see if any ad indicators exist.
-        const adIsPresent = (await adShowingLocator.count()) > 0;
+        const mainVideo = page.locator('video.html5-main-video');
 
-        if (!adIsPresent) {
-            logInstance.info('No ad container detected. Assuming ad is finished.');
+        // Check for multiple "skip" buttons
+        const skipButtonLocators = [
+             page.locator('.ytp-ad-skip-button-modern'),
+             page.locator('.ytp-ad-skip-button'),
+        ];
+
+        // If the main video is playing with sound, the ad is likely over.
+        const mainVideoTime = await mainVideo.evaluate((v) => v.currentTime).catch(() => 0);
+        if (mainVideoTime > 1) {
+            logInstance.info('Main video is playing. Assuming ads are finished.');
+            return;
+        }
+        
+        // If no ad container is visible, the ad is over.
+        if ((await adShowingLocator.count()) === 0) {
+            logInstance.info('Ad container no longer detected. Assuming ad is finished.');
             return;
         }
 
-        logInstance.info('Ad is currently present.');
+        logInstance.info('Ad is currently present. Checking for skip button...');
 
-        const skipButtonLocator = page.locator('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
-        if (await skipButtonLocator.isVisible()) {
-            logInstance.info('Skip button is visible. Attempting to click.');
-            await clickIfExists(page, skipButtonLocator, logInstance, 1000);
-            await sleep(2000); 
-            continue; 
+        // Try to click any of the potential skip buttons
+        for (const locator of skipButtonLocators) {
+            if (await clickIfExists(page, locator, logInstance)) {
+                await sleep(2000); // Give time for ad to disappear
+                return; // Exit the function successfully
+            }
         }
-
-        await sleep(2500);
+        
+        await sleep(2000); // Wait before checking again
     }
 
     logInstance.warning('Ad handling timed out. Proceeding with video playback attempt.');
@@ -155,7 +168,7 @@ const crawler = new PlaywrightCrawler({
    },
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
-   requestHandlerTimeoutSecs: 180,
+   requestHandlerTimeoutSecs: 300, // Increased timeout for more complex videos
    navigationTimeoutSecs: input.timeout,
    maxRequestRetries: 3,
 
@@ -230,15 +243,20 @@ const crawler = new PlaywrightCrawler({
                     log.info(`Watch condition met. Ended: ${videoState.ended}, Time: ${videoState.currentTime.toFixed(2)}s`);
                     break;
                 }
-                if (elapsedTime > targetWatchTimeSec * 1.5 + 60) {
+                if (elapsedTime > targetWatchTimeSec * 1.5 + 120) { // More generous timeout
                     throw new Error('Watch loop timed out.');
                 }
                 if (videoState.paused) {
                     await ensureVideoPlaying(page, pageLog);
                 }
-
-                if (Math.floor(elapsedTime) > 0 && Math.floor(elapsedTime) % 30 === 0) {
-                    await handleAds(page, platform, userData, pageLog);
+                
+                // Only check for mid-roll ads every 60 seconds to be less disruptive
+                if (Math.floor(elapsedTime) > 0 && Math.floor(elapsedTime) % 60 === 0) {
+                     // Check for ads only once per minute to avoid getting stuck
+                    if (elapsedTime - (result.lastAdCheckTime || 0) > 59) {
+                        await handleAds(page, platform, userData, pageLog);
+                        result.lastAdCheckTime = elapsedTime;
+                    }
                 }
 
                 await sleep(5000);
