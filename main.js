@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { PlaywrightCrawler, sleep, PlaywrightPlugin, log } from 'crawlee';
+import { PlaywrightCrawler, sleep, log } from 'crawlee';
 import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 
@@ -12,7 +12,7 @@ function extractVideoId(url, logInstance) {
         }
         if (url.includes('rumble.com')) {
             const pathParts = urlObj.pathname.split('/');
-            const lastPart = pathParts.pop() || pathParts.pop();
+            const lastPart = pathParts.pop() || pathParts.pop(); // Handle trailing slash
             return lastPart.split('-')[0];
         }
         logInstance.warning('Could not determine platform from URL.', { url });
@@ -135,31 +135,29 @@ for (const task of tasks) {
 }
 
 const proxyConfiguration = await Actor.createProxyConfiguration({
-    proxyUrls: input.customProxyUrls?.length ? input.customProxyUrls : undefined,
-    groups: input.proxyGroups,
-    countryCode: input.proxyCountry,
+   proxyUrls: input.customProxyUrls?.length ? input.customProxyUrls : undefined,
+   groups: input.proxyGroups,
+   countryCode: input.proxyCountry,
 });
 
 const crawler = new PlaywrightCrawler({
-    requestQueue,
-    proxyConfiguration,
-    // THIS IS THE CORRECTED, ROBUST CONFIGURATION
-    browserPoolOptions: {
-        useFingerprints: true,
-        browserPlugins: [
-            new PlaywrightPlugin({
-                launcher: chromium, // Use the stealth-patched launcher
-                launchOptions: {
-                    headless: input.headless,
-                },
-            }),
-        ],
-    },
-    // End of corrected configuration
-    minConcurrency: 1,
-    maxConcurrency: input.concurrency,
-    navigationTimeoutSecs: input.timeout,
-    maxRequestRetries: 3,
+   requestQueue,
+   proxyConfiguration,
+    // *** THIS IS THE CORRECTED CONFIGURATION ***
+    // We use `launchContext` to specify the stealth launcher, as the error message suggested.
+    // The conflicting `browserPoolOptions` has been removed.
+   launchContext: {
+       launcher: chromium,
+       useIncognitoPages: true,
+       launchOptions: {
+           headless: input.headless,
+       },
+   },
+   // *** END OF CORRECTION ***
+   minConcurrency: 1,
+   maxConcurrency: input.concurrency,
+   navigationTimeoutSecs: input.timeout,
+   maxRequestRetries: 3,
 
     requestHandler: async ({ request, page, log: pageLog, session }) => {
         const { url, userData } = request;
