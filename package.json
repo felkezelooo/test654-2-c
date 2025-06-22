@@ -23,9 +23,7 @@
   "dependencies": {
     "apify": "^3.4.2",
     "crawlee": "^3.10.0",
-    "playwright": "*",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "playwright": "*"
   },
   "engines": {
     "node": ">=20.0.0"
