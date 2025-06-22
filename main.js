@@ -43,10 +43,9 @@ async function handleConsent(page, logInstance) {
     logInstance.info('No consent dialogs found or they were handled.');
 }
 
-// ** FIXED & MORE ROBUST AD HANDLING LOGIC **
 async function handleAds(page, platform, input, logInstance) {
     if (platform !== 'youtube' || !input.autoSkipAds) {
-        return; // Only run for YouTube and if skipping is enabled.
+        return;
     }
 
     logInstance.info('Starting robust ad handling logic...');
@@ -55,7 +54,6 @@ async function handleAds(page, platform, input, logInstance) {
     const skipButtonLocator = page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button, .ytp-skip-ad-button');
 
     try {
-        // Wait for an ad container to appear, but don't fail if it doesn't within a reasonable time.
         await adContainerLocator.first().waitFor({ state: 'visible', timeout: 7000 });
         logInstance.info('Ad container detected. Monitoring for skip button or ad completion.');
     } catch (e) {
@@ -67,33 +65,30 @@ async function handleAds(page, platform, input, logInstance) {
     const maxAdWatchTimeMs = (input.maxSecondsAds || 60) * 1000;
 
     while (Date.now() - adWatchStartTime < maxAdWatchTimeMs) {
-        // Check if the ad container has disappeared, which means the ad is over.
         if ((await adContainerLocator.count()) === 0) {
             logInstance.info('Ad container is no longer visible. Ad has finished.');
-            await sleep(1000); // A small pause for the main content to transition in.
+            await sleep(1000);
             return;
         }
 
-        // Try to click the skip button if it becomes visible.
         try {
             await skipButtonLocator.click({ timeout: 1500 });
             logInstance.info('Successfully clicked the skip ad button.');
-            await sleep(2000); // Wait for the main video to load and stabilize.
+            await sleep(2000);
             return;
         } catch (e) {
             logInstance.debug('Skip button not yet clickable or not found. Continuing to monitor...');
         }
 
-        await sleep(1000); // Wait before the next check.
+        await sleep(1000);
     }
 
-    logInstance.warning(`Ad handling timed out after ${input.maxSecondsAds} seconds. The ad might be unskippable or the page is stuck.`);
+    logInstance.warning(`Ad handling timed out after ${input.maxSecondsAds} seconds. The ad might be unskippable.`);
     if ((await adContainerLocator.count()) > 0) {
         logInstance.warning('Ad container is still visible after timeout. Attempting to proceed regardless.');
     }
 }
 
-// ** MORE ROBUST PLAYBACK CHECK **
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video').first();
@@ -133,18 +128,17 @@ async function ensureVideoPlaying(page, logInstance) {
     }
 }
 
-// ** FIXED DURATION CHECK TO IGNORE ADS **
 async function getStableVideoDuration(page, logInstance) {
     logInstance.info('Waiting for stable video duration...');
     const videoLocator = page.locator('video.html5-main-video').first();
     const adContainerLocator = page.locator('.ad-showing, .video-ads');
     let lastDuration = 0;
 
-    for (let i = 0; i < 20; i++) { // Increased attempts for more stability
-        if (await adContainerLocator.isVisible({timeout: 1000}).catch(() => false)) {
+    for (let i = 0; i < 20; i++) {
+        if (await adContainerLocator.isVisible({ timeout: 1000 }).catch(() => false)) {
             logInstance.warning('Ad is still active, delaying duration check...');
             await sleep(2000);
-            lastDuration = 0; // Reset duration to avoid false stability from a previous ad
+            lastDuration = 0;
             continue;
         }
 
@@ -168,7 +162,7 @@ async function getStableVideoDuration(page, logInstance) {
 }
 
 
-// --- Actor Main Execution (No changes below this line) ---
+// --- Actor Main Execution ---
 await Actor.init();
 chromium.use(stealthPlugin());
 const input = await Actor.getInput();
@@ -193,6 +187,7 @@ const proxyConfiguration = input.useProxies ? await Actor.createProxyConfigurati
     groups: input.proxyGroups,
     countryCode: input.proxyCountry || undefined,
 }) : undefined;
+
 const crawler = new PlaywrightCrawler({
     requestQueue,
     proxyConfiguration,
@@ -202,11 +197,10 @@ const crawler = new PlaywrightCrawler({
     requestHandlerTimeoutSecs: 450,
     navigationTimeoutSecs: input.timeout,
     maxRequestRetries: 3,
-    preNavigationHooks: [ async ({ page }) => {
-            const blockedDomains = ['googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'googletagservices.com', 'google-analytics.com', 'youtubei/v1/log_event'];
-            await page.route('**/*', (route) => (blockedDomains.some(domain => route.request().url().includes(domain)) ? route.abort() : route.continue()).catch(() => {}));
-        },
-    ],
+    preNavigationHooks: [async ({ page }) => {
+        const blockedDomains = ['googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'googletagservices.com', 'google-analytics.com', 'youtubei/v1/log_event'];
+        await page.route('**/*', (route) => (blockedDomains.some(domain => route.request().url().includes(domain)) ? route.abort() : route.continue()).catch(() => {}));
+    }],
     requestHandler: async ({ request, page, log: pageLog, session }) => {
         const { url, userData } = request;
         const result = {
@@ -223,4 +217,71 @@ const crawler = new PlaywrightCrawler({
                 const videoLinkLocator = page.locator(`a#video-title[href*="${userData.videoId}"]`).first();
                 await videoLinkLocator.waitFor({ state: 'visible', timeout: 30000 });
                 pageLog.info('Found video link in search results, clicking...');
-                await
+                await videoLinkLocator.click();
+            } else {
+                if (userData.watchType === 'referer' && userData.refererUrl) {
+                    await page.setExtraHTTPHeaders({ 'Referer': userData.refererUrl });
+                }
+                await page.goto(url, { timeout: input.timeout * 1000, waitUntil: 'domcontentloaded' });
+            }
+            await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached...'));
+            await handleConsent(page, pageLog);
+            await handleAds(page, userData.platform, userData, pageLog);
+            await ensureVideoPlaying(page, pageLog);
+            await page.locator('video').first().evaluate(video => {
+                video.muted = false;
+                video.volume = 0.05 + Math.random() * 0.1;
+            }).catch(e => pageLog.debug('Could not set volume', { error: e.message }));
+            const duration = await getStableVideoDuration(page, pageLog);
+            result.durationFoundSec = duration;
+            const targetWatchTimeSec = duration * (userData.watchTimePercentage / 100);
+            result.watchTimeRequestedSec = targetWatchTimeSec;
+            pageLog.info(`Target watch time: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s total.`);
+            const watchStartTime = Date.now();
+            let lastInteractionTime = 0;
+            while (true) {
+                const elapsedTime = (Date.now() - watchStartTime) / 1000;
+                const videoState = await page.locator('video').first().evaluate(v => ({
+                    currentTime: v.currentTime,
+                    paused: v.paused,
+                    ended: v.ended,
+                })).catch(() => ({ currentTime: 0, paused: true, ended: false }));
+                result.watchTimeActualSec = videoState.currentTime;
+                if (videoState.currentTime >= targetWatchTimeSec || videoState.ended) {
+                    pageLog.info(`Watch condition met. Ended: ${videoState.ended}, Time: ${videoState.currentTime.toFixed(2)}s`);
+                    break;
+                }
+                if (elapsedTime > targetWatchTimeSec * 1.5 + 120) throw new Error('Watch loop timed out.');
+                if (videoState.paused) await ensureVideoPlaying(page, pageLog);
+                if (elapsedTime - lastInteractionTime > 30) {
+                    pageLog.info('Simulating human-like mouse movement to prevent idle timeout...');
+                    await page.mouse.move(Math.random() * 500 + 100, Math.random() * 300 + 100, { steps: 20 });
+                    lastInteractionTime = elapsedTime;
+                }
+                await sleep(5000);
+            }
+            result.status = 'success';
+        } catch (error) {
+            pageLog.error('An error occurred during video processing.', { url, error: error.stack });
+            result.status = 'failure';
+            result.error = error.stack;
+        } finally {
+            result.endTime = new Date().toISOString();
+            await Actor.pushData(result);
+        }
+    },
+    failedRequestHandler: async ({ request, log: pageLog }) => {
+        pageLog.error(`Request failed too many times, giving up.`, { url: request.url });
+        await Actor.pushData({
+            url: request.url,
+            videoId: request.userData.videoId,
+            platform: request.userData.platform,
+            status: 'terminal_failure',
+            error: `Request failed after ${request.retryCount} retries.`,
+            log: request.errorMessages,
+        });
+    },
+}); // <-- ** This was the block with the missing brace in the previous run. It is now correct. **
+
+await crawler.run();
+await Actor.exit();
