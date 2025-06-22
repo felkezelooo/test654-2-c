@@ -43,10 +43,7 @@ async function handleConsent(page, logInstance) {
 }
 
 async function handleAds(page, platform, input, logInstance) {
-    if (platform !== 'youtube') {
-        logInstance.info(`Ad handling for '${platform}' is not specifically implemented.`);
-        return;
-    }
+    if (platform !== 'youtube') return;
 
     logInstance.info('Starting aggressive ad handling logic.');
     const adContainerLocator = page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info');
@@ -76,7 +73,7 @@ async function handleAds(page, platform, input, logInstance) {
             }).catch(() => false);
 
             if (adManipulated) {
-                logInstance.info('Successfully manipulated ad video state (muted, sped up, fast-forwarded).');
+                logInstance.info('Successfully manipulated ad video state.');
             }
         } catch (e) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
@@ -96,38 +93,36 @@ async function handleAds(page, platform, input, logInstance) {
     logInstance.warning(`Ad handling logic timed out after ${maxAdWatchTimeMs / 1000} seconds.`);
 }
 
-// *** NEW, MORE ROBUST `ensureVideoPlaying` FUNCTION ***
+// *** FINAL `ensureVideoPlaying` with more specific selector ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video, video.rumble-player-video').first();
 
-    // First, check if it's already playing.
     if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
         logInstance.info('Video is already playing.');
         return;
     }
 
-    // A user's first action is to click the big play button. We'll try that first.
-    // This is a more "human" way to start playback.
-    const mainPlayButton = page.locator('.ytp-large-play-button');
+    // ** THE FIX IS HERE **
+    // We target the main player container first, then find the play button inside it.
+    // This avoids clicking the play button on thumbnail previews.
+    const mainPlayButton = page.locator('#movie_player .ytp-large-play-button');
     if (await mainPlayButton.isVisible({ timeout: 3000 })) {
         logInstance.info('Large play button is visible, attempting to click it.');
         await mainPlayButton.click().catch((e) => logInstance.warning('Failed to click large play button', { error: e.message }));
-        await sleep(2000); // Wait for player state to change
+        await sleep(2000);
     }
 
-    // Now, loop a few times to confirm it's playing, or try clicking the video directly.
     for (let attempt = 1; attempt <= 3; attempt++) {
         if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
             logInstance.info(`Video is now playing after attempts.`);
-            return; // Success!
+            return;
         }
         logInstance.warning(`Video is still paused on attempt ${attempt}. Clicking video element directly.`);
         await videoLocator.click({ timeout: 2000, force: true, trial: true }).catch((e) => logInstance.debug('Direct video element click failed.', { error: e.message }));
         await sleep(1500);
     }
 
-    // Final check
     if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
         logInstance.info(`Video is finally playing.`);
         return;
@@ -260,6 +255,11 @@ const crawler = new PlaywrightCrawler({
                 await page.goto(url, { timeout: input.timeout * 1000, waitUntil: 'domcontentloaded' });
             }
 
+            // This navigation happens after clicking the search result link
+            if (userData.watchType === 'search') {
+                await page.waitForLoadState('domcontentloaded', { timeout: 30000 });
+            }
+            
             await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached, continuing...'));
             await handleConsent(page, pageLog);
             await handleAds(page, platform, userData, pageLog);
