@@ -43,16 +43,16 @@ async function handleConsent(page, logInstance) {
 }
 
 async function handleAds(page, platform, input, logInstance) {
-    if (platform !== 'youtube') {
-        logInstance.info(`Ad handling for '${platform}' is not specifically implemented.`);
-        return;
-    }
+    if (platform !== 'youtube') return;
+
     logInstance.info('Starting aggressive ad handling logic.');
     const adContainerLocator = page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info');
     const adVideoLocator = page.locator('video.html5-main-video');
     const skipButtonLocator = page.getByRole('button', { name: /skip ad/i });
+
     const adWatchStartTime = Date.now();
     const maxAdWatchTimeMs = (input.maxSecondsAds || 45) * 1000;
+
     while (Date.now() - adWatchStartTime < maxAdWatchTimeMs) {
         if ((await adContainerLocator.count()) === 0) {
             logInstance.info('Ad container no longer visible. Concluding ad handler.');
@@ -60,18 +60,13 @@ async function handleAds(page, platform, input, logInstance) {
         }
         logInstance.info('Ad is visible. Attempting aggressive player state manipulation.');
         try {
-            const adManipulated = await adVideoLocator.evaluate((video) => {
+            await adVideoLocator.evaluate((video) => {
                 if (video && video.duration > 0 && !isNaN(video.duration)) {
                     video.muted = true;
                     video.playbackRate = 16;
                     video.currentTime = video.duration;
-                    return true;
                 }
-                return false;
-            }).catch(() => false);
-            if (adManipulated) {
-                logInstance.info('Successfully manipulated ad video state.');
-            }
+            });
         } catch (e) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
         }
@@ -81,48 +76,37 @@ async function handleAds(page, platform, input, logInstance) {
             await sleep(1500);
             continue;
         } catch (error) {
-            logInstance.debug('Skip button was not immediately clickable, will re-check.');
+            logInstance.debug('Skip button was not immediately clickable.');
         }
         await sleep(1000);
     }
     logInstance.warning(`Ad handling logic timed out after ${maxAdWatchTimeMs / 1000} seconds.`);
 }
 
-// *** FINAL `ensureVideoPlaying` with KEYBOARD INTERACTION ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video').first();
 
-    // Loop a few times to try and start playback
     for (let attempt = 1; attempt <= 4; attempt++) {
-        // First, check if video is already playing
         if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
             logInstance.info(`Video is confirmed to be playing on attempt ${attempt}.`);
             return;
         }
-
         logInstance.warning(`Video is paused on attempt ${attempt}. Trying keyboard press...`);
-
-        // STRATEGY: Simulate a 'k' key press, the keyboard shortcut for play/pause.
-        // This is much more reliable than clicking.
         try {
-            // Click the player to ensure it has focus before sending a key press
             await page.locator('#movie_player').click({ timeout: 2000 });
             await page.keyboard.press('k');
             logInstance.info(`Sent 'k' keyboard press.`);
-            await sleep(2000); // Wait for player to react
+            await sleep(2000);
         } catch (e) {
             logInstance.error(`Failed to send keyboard press: ${e.message}`);
         }
-
-        // Check one last time after the key press
         if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
             logInstance.info('Video started playing after keyboard press!');
             return;
         }
     }
-
-    throw new Error('Failed to ensure video was playing after multiple attempts with keyboard and mouse.');
+    throw new Error('Failed to ensure video was playing after multiple attempts.');
 }
 
 
@@ -234,7 +218,6 @@ const crawler = new PlaywrightCrawler({
         };
 
         try {
-            // Navigate to the page first
             if (userData.watchType === 'search' && userData.searchKeywords) {
                 const keyword = userData.searchKeywords;
                 const searchUrl = platform === 'youtube'
@@ -242,7 +225,6 @@ const crawler = new PlaywrightCrawler({
                     : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
                 pageLog.info(`Navigating to search results for keyword: "${keyword}"`, { searchUrl });
                 await page.goto(searchUrl);
-                // After navigation, find and click the video link
                 const videoLinkLocator = page.locator(`a#video-title[href*="${videoId}"]`).first();
                 await videoLinkLocator.waitFor({ state: 'visible', timeout: 30000 });
                 pageLog.info('Found video link in search results, clicking...');
@@ -255,8 +237,7 @@ const crawler = new PlaywrightCrawler({
                 await page.goto(url, { timeout: input.timeout * 1000, waitUntil: 'domcontentloaded' });
             }
 
-            // Now that we are on the video page, perform the actions
-            await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached, continuing...'));
+            await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached...'));
             await handleConsent(page, pageLog);
             await handleAds(page, platform, userData, pageLog);
             await ensureVideoPlaying(page, pageLog);
@@ -274,6 +255,9 @@ const crawler = new PlaywrightCrawler({
             pageLog.info(`Target watch time: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s total.`);
 
             const watchStartTime = Date.now();
+            let lastMouseX = 500;
+            let lastMouseY = 300;
+
             while (true) {
                 const elapsedTime = (Date.now() - watchStartTime) / 1000;
                 const videoState = await page.locator('video').first().evaluate(v => ({
@@ -293,13 +277,20 @@ const crawler = new PlaywrightCrawler({
                 if (videoState.paused) {
                     await ensureVideoPlaying(page, pageLog);
                 }
-                
-                if (Math.floor(elapsedTime) > 0 && Math.floor(elapsedTime) % 60 === 0) {
-                    if (elapsedTime - (result.lastAdCheckTime || 0) > 59) {
-                        await handleAds(page, platform, userData, pageLog);
-                        result.lastAdCheckTime = elapsedTime;
+
+                // *** NEW: Human-like interaction during watch loop ***
+                if (Math.floor(elapsedTime) > 0 && Math.floor(elapsedTime) % 25 === 0) {
+                    if (elapsedTime - (result.lastInteractionTime || 0) > 24) {
+                        pageLog.info('Simulating human-like mouse movement to prevent idle timeout...');
+                        const newX = lastMouseX + (Math.random() - 0.5) * 200;
+                        const newY = lastMouseY + (Math.random() - 0.5) * 200;
+                        await page.mouse.move(newX, newY, { steps: 20 });
+                        lastMouseX = newX;
+                        lastMouseY = newY;
+                        result.lastInteractionTime = elapsedTime;
                     }
                 }
+
                 await sleep(5000);
             }
             result.status = 'success';
