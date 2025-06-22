@@ -42,7 +42,6 @@ async function handleConsent(page, logInstance) {
     logInstance.info('No consent dialogs found or handled.');
 }
 
-// *** NEW: Aggressive, multi-layered ad handling logic ***
 async function handleAds(page, platform, input, logInstance) {
     if (platform !== 'youtube') {
         logInstance.info(`Ad handling for '${platform}' is not specifically implemented.`);
@@ -65,13 +64,12 @@ async function handleAds(page, platform, input, logInstance) {
 
         logInstance.info('Ad is visible. Attempting aggressive player state manipulation.');
 
-        // Strategy 1: Aggressively manipulate the ad video's state.
         try {
             const adManipulated = await adVideoLocator.evaluate((video) => {
                 if (video && video.duration > 0 && !isNaN(video.duration)) {
                     video.muted = true;
-                    video.playbackRate = 16; // Speed up the ad playback significantly
-                    video.currentTime = video.duration; // Jump to the end of the ad
+                    video.playbackRate = 16;
+                    video.currentTime = video.duration;
                     return true;
                 }
                 return false;
@@ -84,12 +82,11 @@ async function handleAds(page, platform, input, logInstance) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
         }
 
-        // Strategy 2: Attempt a resilient click on the skip button as a fallback/cleanup.
         try {
             await skipButtonLocator.click({ timeout: 1000 });
             logInstance.info('Successfully clicked the skip ad button post-manipulation.');
-            await sleep(1500); // Give time for the next video to load.
-            continue; // Re-run the loop to check for back-to-back ads.
+            await sleep(1500);
+            continue;
         } catch (error) {
             logInstance.debug('Skip button was not immediately clickable, will re-check.');
         }
@@ -99,24 +96,46 @@ async function handleAds(page, platform, input, logInstance) {
     logInstance.warning(`Ad handling logic timed out after ${maxAdWatchTimeMs / 1000} seconds.`);
 }
 
-
+// *** NEW, MORE ROBUST `ensureVideoPlaying` FUNCTION ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video, video.rumble-player-video').first();
-    await page.getByRole('button', { name: 'Play (k)' }).click({ timeout: 2000 }).catch(() => {});
 
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // First, check if it's already playing.
+    if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
+        logInstance.info('Video is already playing.');
+        return;
+    }
+
+    // A user's first action is to click the big play button. We'll try that first.
+    // This is a more "human" way to start playback.
+    const mainPlayButton = page.locator('.ytp-large-play-button');
+    if (await mainPlayButton.isVisible({ timeout: 3000 })) {
+        logInstance.info('Large play button is visible, attempting to click it.');
+        await mainPlayButton.click().catch((e) => logInstance.warning('Failed to click large play button', { error: e.message }));
+        await sleep(2000); // Wait for player state to change
+    }
+
+    // Now, loop a few times to confirm it's playing, or try clicking the video directly.
+    for (let attempt = 1; attempt <= 3; attempt++) {
         if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
-            logInstance.info(`Video is confirmed to be playing on attempt ${attempt + 1}.`);
-            return; // Use return to exit the function successfully
+            logInstance.info(`Video is now playing after attempts.`);
+            return; // Success!
         }
-        logInstance.warning(`Video is paused on attempt ${attempt + 1}. Attempting to play.`);
-        await videoLocator.click({ timeout: 2000, force: true, trial: true }).catch((e) => logInstance.debug('Video click failed.', { e: e.message }));
+        logInstance.warning(`Video is still paused on attempt ${attempt}. Clicking video element directly.`);
+        await videoLocator.click({ timeout: 2000, force: true, trial: true }).catch((e) => logInstance.debug('Direct video element click failed.', { error: e.message }));
         await sleep(1500);
+    }
+
+    // Final check
+    if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
+        logInstance.info(`Video is finally playing.`);
+        return;
     }
 
     throw new Error('Failed to ensure video was playing after multiple attempts.');
 }
+
 
 async function getStableVideoDuration(page, logInstance) {
     logInstance.info('Waiting for stable video duration...');
@@ -198,16 +217,13 @@ const crawler = new PlaywrightCrawler({
     preNavigationHooks: [
         async ({ page, log: pageLog }) => {
             const blockedDomains = [
-                'googlesyndication.com',
-                'googleadservices.com',
-                'doubleclick.net',
-                'googletagservices.com',
+                'googlesyndication.com', 'googleadservices.com',
+                'doubleclick.net', 'googletagservices.com',
                 'google-analytics.com',
             ];
             await page.route('**/*', (route) => {
                 const url = route.request().url();
                 if (blockedDomains.some(domain => url.includes(domain))) {
-                    pageLog.debug(`Blocking ad request to: ${url}`);
                     return route.abort().catch(() => {});
                 }
                 return route.continue().catch(() => {});
