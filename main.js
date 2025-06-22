@@ -51,35 +51,34 @@ async function handleConsent(page, logInstance) {
     logInstance.info('No consent dialogs found or handled.');
 }
 
-// *** NEW, MORE ROBUST `handleAds` FUNCTION ***
+// *** Final corrected `handleAds` function ***
 async function handleAds(page, platform, input, logInstance) {
     logInstance.info('Starting ad handling logic.');
     const maxAdWatchTimeMs = (input.maxSecondsAds || 90) * 1000;
     const adLoopStartTime = Date.now();
 
-    // This loop will run for a maximum of `maxAdWatchTimeMs`
     while (Date.now() - adLoopStartTime < maxAdWatchTimeMs) {
         const adShowingLocator = page.locator('.ad-showing, .video-ads.ytp-ad-module');
-        const isAdVisible = await adShowingLocator.isVisible();
+        
+        // ** THIS IS THE CORRECTED LINE **
+        // Instead of .isVisible(), we use .count() to see if any ad indicators exist.
+        const adIsPresent = (await adShowingLocator.count()) > 0;
 
-        // If no ad container is visible, the ad is over.
-        if (!isAdVisible) {
-            logInstance.info('Ad container no longer visible. Assuming ad is finished.');
+        if (!adIsPresent) {
+            logInstance.info('No ad container detected. Assuming ad is finished.');
             return;
         }
 
-        logInstance.info('Ad is currently visible.');
+        logInstance.info('Ad is currently present.');
 
-        // Try to click the skip button if it appears
         const skipButtonLocator = page.locator('.ytp-ad-skip-button, .ytp-ad-skip-button-modern');
         if (await skipButtonLocator.isVisible()) {
             logInstance.info('Skip button is visible. Attempting to click.');
             await clickIfExists(page, skipButtonLocator, logInstance, 1000);
-            await sleep(2000); // Give time for the ad to disappear
-            continue; // Go to the top of the loop to re-evaluate
+            await sleep(2000); 
+            continue; 
         }
 
-        // Wait for a short interval before checking again
         await sleep(2500);
     }
 
@@ -156,7 +155,6 @@ const crawler = new PlaywrightCrawler({
    },
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
-   // Increased timeout to give ad handler more time
    requestHandlerTimeoutSecs: 180,
    navigationTimeoutSecs: input.timeout,
    maxRequestRetries: 3,
