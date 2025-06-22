@@ -3,7 +3,7 @@ import { PlaywrightCrawler, sleep, log } from 'crawlee';
 import { chromium } from 'playwright-extra';
 import stealthPlugin from 'puppeteer-extra-plugin-stealth';
 
-// --- Helper Functions ---
+// --- Helper Functions (No changes here, included for completeness) ---
 function extractVideoId(url, logInstance) {
     try {
         const urlObj = new URL(url);
@@ -12,7 +12,7 @@ function extractVideoId(url, logInstance) {
         }
         if (url.includes('rumble.com')) {
             const pathParts = urlObj.pathname.split('/');
-            const lastPart = pathParts.pop() || pathParts.pop(); // Handle trailing slash
+            const lastPart = pathParts.pop() || pathParts.pop();
             return lastPart.split('-')[0];
         }
         logInstance.warning('Could not determine platform from URL.', { url });
@@ -34,7 +34,7 @@ async function handleConsent(page, logInstance) {
         try {
             await locator.click({ timeout: 5000 });
             logInstance.info('Clicked a consent button.');
-            await sleep(2000); // Wait for the dialog to disappear
+            await sleep(2000);
             return;
         } catch (e) {
             logInstance.debug('A consent button was not found or clickable.');
@@ -47,12 +47,9 @@ async function handleAds(page, platform, input, logInstance) {
     if (platform !== 'youtube' || !input.autoSkipAds) {
         return;
     }
-
     logInstance.info('Starting robust ad handling logic...');
-
     const adContainerLocator = page.locator('.ad-showing, .video-ads, .ytp-ad-player-overlay-instream-info');
     const skipButtonLocator = page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button, .ytp-skip-ad-button');
-
     try {
         await adContainerLocator.first().waitFor({ state: 'visible', timeout: 7000 });
         logInstance.info('Ad container detected. Monitoring for skip button or ad completion.');
@@ -60,17 +57,14 @@ async function handleAds(page, platform, input, logInstance) {
         logInstance.info('No ad container appeared within the initial timeout. Assuming no ads.');
         return;
     }
-
     const adWatchStartTime = Date.now();
     const maxAdWatchTimeMs = (input.maxSecondsAds || 60) * 1000;
-
     while (Date.now() - adWatchStartTime < maxAdWatchTimeMs) {
         if ((await adContainerLocator.count()) === 0) {
             logInstance.info('Ad container is no longer visible. Ad has finished.');
             await sleep(1000);
             return;
         }
-
         try {
             await skipButtonLocator.click({ timeout: 1500 });
             logInstance.info('Successfully clicked the skip ad button.');
@@ -79,52 +73,11 @@ async function handleAds(page, platform, input, logInstance) {
         } catch (e) {
             logInstance.debug('Skip button not yet clickable or not found. Continuing to monitor...');
         }
-
         await sleep(1000);
     }
-
     logInstance.warning(`Ad handling timed out after ${input.maxSecondsAds} seconds. The ad might be unskippable.`);
     if ((await adContainerLocator.count()) > 0) {
         logInstance.warning('Ad container is still visible after timeout. Attempting to proceed regardless.');
-    }
-}
-
-async function ensureVideoPlaying(page, logInstance) {
-    logInstance.info('Ensuring video is playing...');
-    const videoLocator = page.locator('video.html5-main-video').first();
-    const playerErrorLocator = page.locator('.ytp-error');
-
-    if (await playerErrorLocator.isVisible()) {
-        const errorMessage = await page.locator('.ytp-error-content-wrap-reason').textContent().catch(() => 'Unknown reason.');
-        throw new Error(`Youtubeer error detected: ${errorMessage}`);
-    }
-
-    const isPaused = await videoLocator.evaluate((v) => v.paused).catch(() => true);
-    if (!isPaused) {
-        logInstance.info('Video is already playing.');
-        return;
-    }
-
-    logInstance.info('Video is paused. Attempting playback strategies...');
-    for (const strategy of ['playerClick', 'keyboard']) {
-        try {
-            if (strategy === 'playerClick') {
-                await page.locator('#movie_player').click({ timeout: 3000, position: { x: 10, y: 10 } });
-            } else {
-                await page.keyboard.press('k');
-            }
-            await sleep(1500);
-            if (!await videoLocator.evaluate((v) => v.paused)) {
-                logInstance.info(`SUCCESS: Video started playing via ${strategy} strategy!`);
-                return;
-            }
-        } catch (e) {
-            logInstance.debug(`${strategy} strategy failed: ${e.message}`);
-        }
-    }
-
-    if (await videoLocator.evaluate((v) => v.paused)) {
-        throw new Error('Failed to play video after trying multiple strategies.');
     }
 }
 
@@ -133,7 +86,6 @@ async function getStableVideoDuration(page, logInstance) {
     const videoLocator = page.locator('video.html5-main-video').first();
     const adContainerLocator = page.locator('.ad-showing, .video-ads');
     let lastDuration = 0;
-
     for (let i = 0; i < 20; i++) {
         if (await adContainerLocator.isVisible({ timeout: 1000 }).catch(() => false)) {
             logInstance.warning('Ad is still active, delaying duration check...');
@@ -141,7 +93,6 @@ async function getStableVideoDuration(page, logInstance) {
             lastDuration = 0;
             continue;
         }
-
         const duration = await videoLocator.evaluate(v => v.duration).catch(() => 0);
         if (duration > 1 && !isNaN(duration) && duration !== Infinity) {
             const stabilityThreshold = duration > 60 ? 1 : 0.5;
@@ -153,7 +104,6 @@ async function getStableVideoDuration(page, logInstance) {
         lastDuration = duration;
         await sleep(1000);
     }
-
     if (lastDuration > 0 && lastDuration !== Infinity) {
         logInstance.warning(`Could not get a fully stable video duration, proceeding with last known: ${lastDuration}`);
         return lastDuration;
@@ -164,17 +114,12 @@ async function getStableVideoDuration(page, logInstance) {
 async function simulateHumanInteraction(page, logInstance) {
     logInstance.info('Simulating human-like interaction to keep session active...');
     const videoPlayerLocator = page.locator('#movie_player');
-
     const actions = [
         async () => {
             logInstance.debug('Interaction: Moving mouse over player.');
             const bb = await videoPlayerLocator.boundingBox();
             if (bb) {
-                await page.mouse.move(
-                    bb.x + (Math.random() * bb.width),
-                    bb.y + (Math.random() * bb.height),
-                    { steps: 15 + Math.floor(Math.random() * 15) },
-                );
+                await page.mouse.move(bb.x + (Math.random() * bb.width), bb.y + (Math.random() * bb.height), { steps: 15 + Math.floor(Math.random() * 15) });
             }
         },
         async () => {
@@ -187,13 +132,45 @@ async function simulateHumanInteraction(page, logInstance) {
             });
         },
     ];
-
     const randomAction = actions[Math.floor(Math.random() * actions.length)];
     try {
         await randomAction();
     } catch (e) {
         logInstance.debug(`Human interaction simulation failed: ${e.message}`);
     }
+}
+
+// ** MODIFIED/FIXED FUNCTION **
+// This function now returns a status object instead of throwing errors directly for recoverable states.
+async function checkAndHandlePlayback(page, logInstance) {
+    logInstance.info('Checking video playback status...');
+    const videoLocator = page.locator('video.html5-main-video').first();
+    const playerErrorLocator = page.locator('.ytp-error');
+
+    if (await playerErrorLocator.isVisible()) {
+        const errorMessage = await page.locator('.ytp-error-content-wrap-reason').textContent().catch(() => 'Unknown reason.');
+        logInstance.error(`Youtubeer error detected: ${errorMessage}`);
+        return { isPlaying: false, needsRecovery: true };
+    }
+
+    const isPaused = await videoLocator.evaluate((v) => v.paused).catch(() => true);
+    if (isPaused) {
+        logInstance.info('Video is paused. Attempting to resume playback...');
+        await page.keyboard.press('k').catch((e) => logInstance.debug(`Keyboard press failed: ${e.message}`));
+        await sleep(1500);
+        // After attempting to play, check again. If still paused, it's a problem.
+        if (await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
+            logInstance.warning('Failed to resume video with keyboard. Trying a click.');
+            await page.locator('#movie_player').click({ timeout: 3000 }).catch((e) => logInstance.debug(`Player click failed: ${e.message}`));
+            if (await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
+                logInstance.error('Video could not be resumed after multiple attempts.');
+                return { isPlaying: false, needsRecovery: true }; // Treat as a recoverable error
+            }
+        }
+    }
+    
+    logInstance.info('Video is playing or has been successfully resumed.');
+    return { isPlaying: true, needsRecovery: false };
 }
 
 
@@ -232,7 +209,6 @@ const crawler = new PlaywrightCrawler({
     requestHandlerTimeoutSecs: 450,
     navigationTimeoutSecs: input.timeout,
     maxRequestRetries: 3,
-    // ** REMOVED preNavigationHooks TO STOP ALL URL BLOCKING **
     requestHandler: async ({ request, page, log: pageLog, session }) => {
         const { url, userData } = request;
         const result = {
@@ -242,6 +218,11 @@ const crawler = new PlaywrightCrawler({
             durationFoundSec: null, watchTimeRequestedSec: 0, watchTimeActualSec: 0,
             error: null,
         };
+
+        // ** ADDED RECOVERY LOGIC HERE **
+        let recoveryAttempts = 0;
+        const MAX_RECOVERY_ATTEMPTS = 2;
+
         try {
             if (userData.watchType === 'search' && userData.searchKeywords) {
                 pageLog.info(`Navigating to search results for keyword: "${userData.searchKeywords}"`);
@@ -259,7 +240,7 @@ const crawler = new PlaywrightCrawler({
             await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached...'));
             await handleConsent(page, pageLog);
             await handleAds(page, userData.platform, userData, pageLog);
-            await ensureVideoPlaying(page, pageLog);
+            await checkAndHandlePlayback(page, pageLog);
             await page.locator('video').first().evaluate(video => {
                 video.muted = false;
                 video.volume = 0.05 + Math.random() * 0.1;
@@ -271,20 +252,37 @@ const crawler = new PlaywrightCrawler({
             pageLog.info(`Target watch time: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s total.`);
             const watchStartTime = Date.now();
             let nextInteractionTime = 15 + (Math.random() * 20);
+            
+            // ** UPDATED WATCH LOOP WITH RECOVERY **
             while (true) {
                 const elapsedTime = (Date.now() - watchStartTime) / 1000;
-                const videoState = await page.locator('video').first().evaluate(v => ({
-                    currentTime: v.currentTime,
-                    paused: v.paused,
-                    ended: v.ended,
-                })).catch(() => ({ currentTime: 0, paused: true, ended: false }));
+                const playbackStatus = await checkAndHandlePlayback(page, pageLog);
+                
+                if (playbackStatus.needsRecovery) {
+                    if (recoveryAttempts < MAX_RECOVERY_ATTEMPTS) {
+                        recoveryAttempts++;
+                        pageLog.warning(`Player error detected. Attempting recovery #${recoveryAttempts} by reloading.`);
+                        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
+                        await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout on recovery...'));
+                        await handleConsent(page, pageLog);
+                        await handleAds(page, userData.platform, userData, pageLog);
+                        pageLog.info('Page reloaded, continuing watch loop.');
+                        continue; // Restart the loop to re-evaluate the state
+                    } else {
+                        throw new Error('YouTube player failed and could not be recovered after multiple attempts.');
+                    }
+                }
+                
+                const videoState = await page.locator('video').first().evaluate(v => ({ currentTime: v.currentTime, ended: v.ended })).catch(() => ({ currentTime: 0, ended: false }));
                 result.watchTimeActualSec = videoState.currentTime;
+                
                 if (videoState.currentTime >= targetWatchTimeSec || videoState.ended) {
                     pageLog.info(`Watch condition met. Ended: ${videoState.ended}, Time: ${videoState.currentTime.toFixed(2)}s`);
                     break;
                 }
-                if (elapsedTime > targetWatchTimeSec * 1.5 + 120) throw new Error('Watch loop timed out.');
-                if (videoState.paused) await ensureVideoPlaying(page, pageLog);
+                if (elapsedTime > targetWatchTimeSec * 1.5 + 120) {
+                    throw new Error('Watch loop timed out.');
+                }
                 if (elapsedTime >= nextInteractionTime) {
                     await simulateHumanInteraction(page, pageLog);
                     nextInteractionTime = elapsedTime + (25 + (Math.random() * 25));
