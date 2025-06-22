@@ -43,24 +43,22 @@ async function handleConsent(page, logInstance) {
 }
 
 async function handleAds(page, platform, input, logInstance) {
-    if (platform !== 'youtube') return;
-
+    if (platform !== 'youtube') {
+        logInstance.info(`Ad handling for '${platform}' is not specifically implemented.`);
+        return;
+    }
     logInstance.info('Starting aggressive ad handling logic.');
     const adContainerLocator = page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info');
     const adVideoLocator = page.locator('video.html5-main-video');
     const skipButtonLocator = page.getByRole('button', { name: /skip ad/i });
-
     const adWatchStartTime = Date.now();
     const maxAdWatchTimeMs = (input.maxSecondsAds || 45) * 1000;
-
     while (Date.now() - adWatchStartTime < maxAdWatchTimeMs) {
         if ((await adContainerLocator.count()) === 0) {
             logInstance.info('Ad container no longer visible. Concluding ad handler.');
             return;
         }
-
         logInstance.info('Ad is visible. Attempting aggressive player state manipulation.');
-
         try {
             const adManipulated = await adVideoLocator.evaluate((video) => {
                 if (video && video.duration > 0 && !isNaN(video.duration)) {
@@ -71,14 +69,12 @@ async function handleAds(page, platform, input, logInstance) {
                 }
                 return false;
             }).catch(() => false);
-
             if (adManipulated) {
                 logInstance.info('Successfully manipulated ad video state.');
             }
         } catch (e) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
         }
-
         try {
             await skipButtonLocator.click({ timeout: 1000 });
             logInstance.info('Successfully clicked the skip ad button post-manipulation.');
@@ -87,48 +83,46 @@ async function handleAds(page, platform, input, logInstance) {
         } catch (error) {
             logInstance.debug('Skip button was not immediately clickable, will re-check.');
         }
-
         await sleep(1000);
     }
     logInstance.warning(`Ad handling logic timed out after ${maxAdWatchTimeMs / 1000} seconds.`);
 }
 
-// *** FINAL `ensureVideoPlaying` with more specific selector ***
+// *** FINAL `ensureVideoPlaying` with KEYBOARD INTERACTION ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
-    const videoLocator = page.locator('video.html5-main-video, video.rumble-player-video').first();
+    const videoLocator = page.locator('video.html5-main-video').first();
 
-    if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
-        logInstance.info('Video is already playing.');
-        return;
-    }
-
-    // ** THE FIX IS HERE **
-    // We target the main player container first, then find the play button inside it.
-    // This avoids clicking the play button on thumbnail previews.
-    const mainPlayButton = page.locator('#movie_player .ytp-large-play-button');
-    if (await mainPlayButton.isVisible({ timeout: 3000 })) {
-        logInstance.info('Large play button is visible, attempting to click it.');
-        await mainPlayButton.click().catch((e) => logInstance.warning('Failed to click large play button', { error: e.message }));
-        await sleep(2000);
-    }
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Loop a few times to try and start playback
+    for (let attempt = 1; attempt <= 4; attempt++) {
+        // First, check if video is already playing
         if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
-            logInstance.info(`Video is now playing after attempts.`);
+            logInstance.info(`Video is confirmed to be playing on attempt ${attempt}.`);
             return;
         }
-        logInstance.warning(`Video is still paused on attempt ${attempt}. Clicking video element directly.`);
-        await videoLocator.click({ timeout: 2000, force: true, trial: true }).catch((e) => logInstance.debug('Direct video element click failed.', { error: e.message }));
-        await sleep(1500);
+
+        logInstance.warning(`Video is paused on attempt ${attempt}. Trying keyboard press...`);
+
+        // STRATEGY: Simulate a 'k' key press, the keyboard shortcut for play/pause.
+        // This is much more reliable than clicking.
+        try {
+            // Click the player to ensure it has focus before sending a key press
+            await page.locator('#movie_player').click({ timeout: 2000 });
+            await page.keyboard.press('k');
+            logInstance.info(`Sent 'k' keyboard press.`);
+            await sleep(2000); // Wait for player to react
+        } catch (e) {
+            logInstance.error(`Failed to send keyboard press: ${e.message}`);
+        }
+
+        // Check one last time after the key press
+        if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
+            logInstance.info('Video started playing after keyboard press!');
+            return;
+        }
     }
 
-    if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
-        logInstance.info(`Video is finally playing.`);
-        return;
-    }
-
-    throw new Error('Failed to ensure video was playing after multiple attempts.');
+    throw new Error('Failed to ensure video was playing after multiple attempts with keyboard and mouse.');
 }
 
 
@@ -240,6 +234,7 @@ const crawler = new PlaywrightCrawler({
         };
 
         try {
+            // Navigate to the page first
             if (userData.watchType === 'search' && userData.searchKeywords) {
                 const keyword = userData.searchKeywords;
                 const searchUrl = platform === 'youtube'
@@ -247,6 +242,11 @@ const crawler = new PlaywrightCrawler({
                     : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
                 pageLog.info(`Navigating to search results for keyword: "${keyword}"`, { searchUrl });
                 await page.goto(searchUrl);
+                // After navigation, find and click the video link
+                const videoLinkLocator = page.locator(`a#video-title[href*="${videoId}"]`).first();
+                await videoLinkLocator.waitFor({ state: 'visible', timeout: 30000 });
+                pageLog.info('Found video link in search results, clicking...');
+                await videoLinkLocator.click();
             } else {
                 if (userData.watchType === 'referer' && userData.refererUrl) {
                     pageLog.info(`Navigating with referer: ${userData.refererUrl}`);
@@ -255,11 +255,7 @@ const crawler = new PlaywrightCrawler({
                 await page.goto(url, { timeout: input.timeout * 1000, waitUntil: 'domcontentloaded' });
             }
 
-            // This navigation happens after clicking the search result link
-            if (userData.watchType === 'search') {
-                await page.waitForLoadState('domcontentloaded', { timeout: 30000 });
-            }
-            
+            // Now that we are on the video page, perform the actions
             await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => pageLog.warning('Network idle timeout reached, continuing...'));
             await handleConsent(page, pageLog);
             await handleAds(page, platform, userData, pageLog);
