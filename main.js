@@ -10,6 +10,7 @@ import { chromium } from 'playwright';
 
 /**
  * Generates a highly diverse and consistent "persona" for a single browser session.
+ * This ensures all spoofed values are logically coherent to evade detection.
  * @returns {object} An object containing all the spoofed values for the session.
  */
 function generatePersona() {
@@ -18,9 +19,9 @@ function generatePersona() {
 
     // Expanded profiles for more diversity, based on real-world data.
     const hardwareProfiles = [
-        { concurrency: 4, memory: 8 }, { concurrency: 8, memory: 8 },
-        { concurrency: 8, memory: 16 }, { concurrency: 12, memory: 16 },
-        { concurrency: 16, memory: 16 }, { concurrency: 16, memory: 32 },
+        { concurrency: 4, memory: 8 }, { concurrency: 8, memory: 8 }, { concurrency: 8, memory: 16 },
+        { concurrency: 12, memory: 16 }, { concurrency: 16, memory: 16 }, { concurrency: 16, memory: 32 },
+        { concurrency: 4, memory: 16 }, { concurrency: 6, memory: 12 }, { concurrency: 12, memory: 24 },
     ];
     const screenProfiles = [
         { width: 1920, height: 1080, availMargin: 40 }, { width: 1366, height: 768, availMargin: 40 },
@@ -34,9 +35,7 @@ function generatePersona() {
         { vendor: 'Google Inc. (AMD)', renderer: 'ANGLE (AMD, AMD Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)' },
     ];
     const webglMacosProfiles = [
-        { vendor: 'Apple Inc.', renderer: 'Apple M2' },
-        { vendor: 'Apple Inc.', renderer: 'Apple M1 Pro' },
-        { vendor: 'Apple Inc.', renderer: 'Apple M1' },
+        { vendor: 'Apple Inc.', renderer: 'Apple M2' }, { vendor: 'Apple Inc.', renderer: 'Apple M1 Pro' }, { vendor: 'Apple Inc.', renderer: 'Apple M1' },
     ];
     const windowsFonts = ['Arial', 'Calibri', 'Cambria', 'Comic Sans MS', 'Courier New', 'Georgia', 'Impact', 'Segoe UI', 'Tahoma', 'Times New Roman', 'Verdana'];
     const macosFonts = ['Arial', 'American Typewriter', 'Avenir', 'Courier New', 'Georgia', 'Gill Sans', 'Helvetica', 'Helvetica Neue', 'Impact', 'Menlo', 'San Francisco', 'Times New Roman'];
@@ -64,7 +63,8 @@ function generatePersona() {
         },
         webgl: webglProfile,
         fonts: os === 'windows' ? windowsFonts : macosFonts,
-        canvasNoise: { r: Math.floor(Math.random() * 2) - 1, g: Math.floor(Math.random() * 2) - 1, b: Math.floor(Math.random() * 2) - 1 },
+        timezoneOffset: (3 + Math.floor(Math.random() * 5)) * 60, // Mimic UTC-3 to UTC-7
+        canvasNoise: { r: Math.floor(Math.random() * 10) - 5, g: Math.floor(Math.random() * 10) - 5, b: Math.floor(Math.random() * 10) - 5 },
         audioNoise: (Math.random() - 0.5) * 1e-7,
     };
 }
@@ -91,9 +91,9 @@ async function applyAntiFingerprinting(page) {
                     if (context) {
                         const imageData = context.getImageData(0, 0, this.width, this.height);
                         for (let i = 0; i < imageData.data.length; i += 4) {
-                            imageData.data[i] += p.canvasNoise.r;
-                            imageData.data[i + 1] += p.canvasNoise.g;
-                            imageData.data[i + 2] += p.canvasNoise.b;
+                            imageData.data[i] = Math.min(255, Math.max(0, imageData.data[i] + p.canvasNoise.r));
+                            imageData.data[i + 1] = Math.min(255, Math.max(0, imageData.data[i + 1] + p.canvasNoise.g));
+                            imageData.data[i + 2] = Math.min(255, Math.max(0, imageData.data[i + 2] + p.canvasNoise.b));
                         }
                         context.putImageData(imageData, 0, 0);
                         return originalToDataURL.apply(this, args);
@@ -118,14 +118,7 @@ async function applyAntiFingerprinting(page) {
             };
         }
 
-        const originalGetChannelData = AudioBuffer.prototype.getChannelData;
-        AudioBuffer.prototype.getChannelData = function(...args) {
-            const data = originalGetChannelData.apply(this, args);
-            try {
-                for (let i = 0; i < data.length; i++) data[i] += p.audioNoise;
-            } catch (e) { /* ignore */ }
-            return data;
-        };
+        try { Date.prototype.getTimezoneOffset = function() { return p.timezoneOffset; }; } catch (e) { /* ignore */ }
 
         const originalFontCheck = Document.prototype.fonts.check;
         Document.prototype.fonts.check = function(font) {
@@ -146,6 +139,8 @@ async function applyAntiFingerprinting(page) {
             deviceMemory: { get: () => p.navigator.deviceMemory },
             platform: { get: () => p.navigator.platform },
             languages: { get: () => p.navigator.languages },
+            plugins: { get: () => ({ length: 0 }) }, // Return empty but valid PluginArray
+            mimeTypes: { get: () => ({ length: 0 }) }, // Return empty but valid MimeTypeArray
         });
 
         Object.defineProperties(screen, {
@@ -316,7 +311,21 @@ const crawler = new PlaywrightCrawler({
         useIncognitoPages: true,
         launchOptions: {
             headless: input.headless,
-            args: ['--disable-blink-features=AutomationControlled', '--disable-infobars'],
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyEnforcement,AvoidUnnecessaryBeforeUnloadCheckSync,Translate',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--disable-extensions',
+                '--disable-site-isolation-trials',
+                '--disable-sync',
+                '--force-webrtc-ip-handling-policy=default_public_interface_only',
+                '--no-first-run',
+                '--no-service-autorun',
+                '--password-store=basic',
+                '--use-mock-keychain',
+                '--enable-precise-memory-info',
+            ],
         },
     },
     preNavigationHooks: [
@@ -356,14 +365,12 @@ const crawler = new PlaywrightCrawler({
             result.watchTimeRequestedSec = targetWatchTimeSec;
             pageLog.info(`Now watching for ${targetWatchTimeSec.toFixed(2)} seconds...`);
 
-            // --- NEW Interactive Watch Loop ---
-            const watchIntervalMs = 25 * 1000; // Interact roughly every 25 seconds
+            const watchIntervalMs = 25 * 1000;
             const numIntervals = Math.ceil((targetWatchTimeSec * 1000) / watchIntervalMs);
-
             for (let i = 0; i < numIntervals; i++) {
                 const sleepDuration = (i === numIntervals - 1) ? (targetWatchTimeSec * 1000) % watchIntervalMs || watchIntervalMs : watchIntervalMs;
                 await sleep(sleepDuration);
-                if (i < numIntervals - 1) { // Don't interact after the final sleep
+                if (i < numIntervals - 1) {
                     await simulateHumanInteraction(page, pageLog);
                 }
             }
