@@ -161,6 +161,43 @@ async function getStableVideoDuration(page, logInstance) {
     throw new Error('Could not determine a valid video duration after multiple attempts.');
 }
 
+// ** NEW "HUMAN" INTERACTION SIMULATOR **
+async function simulateHumanInteraction(page, logInstance) {
+    logInstance.info('Simulating human-like interaction to keep session active...');
+    const videoPlayerLocator = page.locator('#movie_player');
+
+    const actions = [
+        async () => {
+            logInstance.debug('Interaction: Moving mouse over player.');
+            const bb = await videoPlayerLocator.boundingBox();
+            if (bb) {
+                await page.mouse.move(
+                    bb.x + (Math.random() * bb.width),
+                    bb.y + (Math.random() * bb.height),
+                    { steps: 15 + Math.floor(Math.random() * 15) },
+                );
+            }
+        },
+        async () => {
+            logInstance.debug('Interaction: Adjusting volume slightly.');
+            await page.locator('video').first().evaluate(v => {
+                if (typeof v.volume === 'number') {
+                    const delta = (Math.random() - 0.5) * 0.1;
+                    v.volume = Math.max(0, Math.min(1, v.volume + delta));
+                }
+            });
+        },
+    ];
+
+    // Pick a random action to perform
+    const randomAction = actions[Math.floor(Math.random() * actions.length)];
+    try {
+        await randomAction();
+    } catch (e) {
+        logInstance.debug(`Human interaction simulation failed: ${e.message}`);
+    }
+}
+
 
 // --- Actor Main Execution ---
 await Actor.init();
@@ -197,8 +234,10 @@ const crawler = new PlaywrightCrawler({
     requestHandlerTimeoutSecs: 450,
     navigationTimeoutSecs: input.timeout,
     maxRequestRetries: 3,
+    // ** UPDATED HOOK TO BE LESS DETECTABLE **
     preNavigationHooks: [async ({ page }) => {
-        const blockedDomains = ['googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'googletagservices.com', 'google-analytics.com', 'youtubei/v1/log_event'];
+        // Blocking event logging can be a fingerprinting vector. Let's only block core ad domains.
+        const blockedDomains = ['googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'googletagservices.com', 'google-analytics.com'];
         await page.route('**/*', (route) => (blockedDomains.some(domain => route.request().url().includes(domain)) ? route.abort() : route.continue()).catch(() => {}));
     }],
     requestHandler: async ({ request, page, log: pageLog, session }) => {
@@ -238,7 +277,8 @@ const crawler = new PlaywrightCrawler({
             result.watchTimeRequestedSec = targetWatchTimeSec;
             pageLog.info(`Target watch time: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s total.`);
             const watchStartTime = Date.now();
-            let lastInteractionTime = 0;
+            // ** UPDATED WATCH LOOP WITH BETTER HUMAN SIMULATION **
+            let nextInteractionTime = 15 + (Math.random() * 20); // First interaction in 15-35s
             while (true) {
                 const elapsedTime = (Date.now() - watchStartTime) / 1000;
                 const videoState = await page.locator('video').first().evaluate(v => ({
@@ -253,10 +293,9 @@ const crawler = new PlaywrightCrawler({
                 }
                 if (elapsedTime > targetWatchTimeSec * 1.5 + 120) throw new Error('Watch loop timed out.');
                 if (videoState.paused) await ensureVideoPlaying(page, pageLog);
-                if (elapsedTime - lastInteractionTime > 30) {
-                    pageLog.info('Simulating human-like mouse movement to prevent idle timeout...');
-                    await page.mouse.move(Math.random() * 500 + 100, Math.random() * 300 + 100, { steps: 20 });
-                    lastInteractionTime = elapsedTime;
+                if (elapsedTime >= nextInteractionTime) {
+                    await simulateHumanInteraction(page, pageLog);
+                    nextInteractionTime = elapsedTime + (25 + (Math.random() * 25)); // Next interaction in 25-50s
                 }
                 await sleep(5000);
             }
@@ -281,7 +320,7 @@ const crawler = new PlaywrightCrawler({
             log: request.errorMessages,
         });
     },
-}); // <-- ** This was the block with the missing brace in the previous run. It is now correct. **
+});
 
 await crawler.run();
 await Actor.exit();
