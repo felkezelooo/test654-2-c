@@ -43,15 +43,11 @@ async function handleConsent(page, logInstance) {
 }
 
 async function handleAds(page, platform, input, logInstance) {
-    if (platform !== 'youtube') {
-        return;
-    }
-
+    if (platform !== 'youtube') return;
     logInstance.info('Starting aggressive ad handling logic.');
     const adContainerLocator = page.locator('.ad-showing, .ytp-ad-player-overlay-instream-info');
     const adVideoLocator = page.locator('video.html5-main-video');
     const skipButtonLocator = page.getByRole('button', { name: /skip ad/i });
-
     const adWatchStartTime = Date.now();
     const maxAdWatchTimeMs = (input.maxSecondsAds || 30) * 1000;
 
@@ -60,9 +56,6 @@ async function handleAds(page, platform, input, logInstance) {
             logInstance.info('Ad container no longer visible. Concluding ad handler.');
             return;
         }
-
-        logInstance.info('Ad is visible. Attempting aggressive player state manipulation.');
-
         try {
             await adVideoLocator.evaluate((video) => {
                 if (video && video.duration > 0 && !isNaN(video.duration)) {
@@ -71,47 +64,55 @@ async function handleAds(page, platform, input, logInstance) {
                     video.currentTime = video.duration;
                 }
             });
-            await sleep(500); // Give a moment for the state to apply
         } catch (e) {
             logInstance.debug(`Could not manipulate ad video state: ${e.message}`);
         }
-
         try {
             await skipButtonLocator.click({ timeout: 1000 });
             logInstance.info('Successfully clicked the skip ad button post-manipulation.');
             await sleep(1500);
-            return; // Exit after successful click
+            return;
         } catch (error) {
             logInstance.debug('Skip button was not immediately clickable.');
         }
-
         await sleep(1000);
     }
     logInstance.warning(`Ad handling logic timed out.`);
 }
 
+// *** THE DEFINITIVE `ensureVideoPlaying` FUNCTION WITH HUMAN SIMULATION ***
 async function ensureVideoPlaying(page, logInstance) {
     logInstance.info('Ensuring video is playing...');
     const videoLocator = page.locator('video.html5-main-video').first();
+    const playerLocator = page.locator('#movie_player');
 
-    for (let attempt = 1; attempt <= 5; attempt++) {
-        const isPaused = await videoLocator.evaluate((v) => v.paused).catch(() => true);
-        if (!isPaused) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        if (!await videoLocator.evaluate((v) => v.paused).catch(() => true)) {
             logInstance.info(`Video is confirmed to be playing on attempt ${attempt}.`);
             return;
         }
-
         logInstance.warning(`Video is paused on attempt ${attempt}.`);
-
         try {
-            // More aggressive click that waits for the element to be ready
-            await page.locator('#movie_player').click({ timeout: 3000 });
-            logInstance.info('Clicked movie player to give focus.');
+            // Strategy 1: The "Human" Hover and Keyboard Press
+            logInstance.info('Attempting to play with hover and keyboard press...');
+            await playerLocator.hover({ timeout: 2000 });
             await page.keyboard.press('k');
-            logInstance.info("Sent 'k' keyboard press.");
-            await sleep(2000); // Wait for reaction
+            await sleep(2000);
+            if (!await videoLocator.evaluate((v) => v.paused)) {
+                logInstance.info('SUCCESS: Video started playing after keyboard press!');
+                return;
+            }
+
+            // Strategy 2: The Forceful Click (as a fallback)
+            logInstance.info('Keyboard press failed. Attempting forceful click...');
+            await videoLocator.click({ timeout: 2000 });
+            await sleep(1500);
+            if (!await videoLocator.evaluate((v) => v.paused)) {
+                logInstance.info('SUCCESS: Video started playing after forceful click!');
+                return;
+            }
         } catch (e) {
-            logInstance.warning(`Keyboard press strategy failed: ${e.message}`);
+            logInstance.error(`Error during playback attempt: ${e.message}`);
         }
     }
 
@@ -125,7 +126,6 @@ async function getStableVideoDuration(page, logInstance) {
     let lastDuration = 0;
     for (let i = 0; i < 15; i++) {
         const duration = await videoLocator.evaluate(v => v.duration).catch(() => 0);
-        // A duration > 60s is unlikely to be an ad.
         if (duration > 60 && Math.abs(duration - lastDuration) < 1) {
             logInstance.info(`Found stable duration: ${duration.toFixed(2)}s`);
             return duration;
@@ -194,7 +194,7 @@ const crawler = new PlaywrightCrawler({
    },
    minConcurrency: 1,
    maxConcurrency: input.concurrency,
-   requestHandlerTimeoutSecs: 450, // Increased timeout for longer videos
+   requestHandlerTimeoutSecs: 450,
    navigationTimeoutSecs: input.timeout,
    maxRequestRetries: 3,
     preNavigationHooks: [
@@ -292,7 +292,6 @@ const crawler = new PlaywrightCrawler({
                     await page.mouse.move(Math.random() * 500 + 100, Math.random() * 300 + 100, { steps: 20 });
                     lastInteractionTime = elapsedTime;
                 }
-
                 await sleep(5000);
             }
             result.status = 'success';
